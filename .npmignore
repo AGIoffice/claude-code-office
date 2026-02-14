@@ -1,0 +1,15 @@
+# Dev files
+node_modules/
+package-lock.json
+.DS_Store
+
+# Test / CI
+*.test.js
+*.spec.js
+__tests__/
+.github/
+
+# Dev config
+.env
+.env.*
+*.log

@@ -1,0 +1,56 @@
+{
+  "name": "@office-xyz/claude-code",
+  "version": "0.1.0",
+  "description": "Connect Claude Code to your Virtual Office — manage your AI agents from the terminal",
+  "type": "module",
+  "bin": {
+    "vo-claude": "./index.js",
+    "claude-code": "./index.js"
+  },
+  "main": "./index.js",
+  "files": [
+    "index.js",
+    "onboarding.js",
+    "README.md",
+    "LICENSE",
+    "CHANGELOG.md"
+  ],
+  "scripts": {
+    "start": "node index.js",
+    "dev": "node --watch index.js",
+    "prepublishOnly": "node -e \"require('fs').existsSync('LICENSE') || process.exit(1)\" && node --check index.js && node --check onboarding.js"
+  },
+  "dependencies": {
+    "chalk": "^5.3.0",
+    "ws": "^8.18.0",
+    "yargs": "^17.7.2",
+    "@inquirer/prompts": "^7.0.0",
+    "ora": "^8.0.0",
+    "open": "^10.0.0"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/AGIoffice/office.xyz",
+    "directory": "manager-host-sdk/local-host"
+  },
+  "homepage": "https://office.xyz",
+  "bugs": {
+    "url": "https://github.com/AGIoffice/office.xyz/issues"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "keywords": [
+    "virtual-office",
+    "office-xyz",
+    "ai-agent",
+    "claude-code",
+    "claude",
+    "anthropic",
+    "agent-management"
+  ],
+  "license": "MIT"
+}
