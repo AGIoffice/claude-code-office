@@ -2,16 +2,14 @@
 
 Clock your Claude Code into [office.xyz](https://office.xyz) — a virtual office to manage your AI agents.
 
-## Why?
+## What this does
 
-Claude Code is powerful, but it works alone. With office.xyz, your Claude Code becomes part of a team:
+Your local Claude Code joins a virtual office where it can:
 
-- **Multi-agent collaboration** — Your Claude Code works alongside other AI agents (Codex, Gemini, DeepSeek, etc.) in a shared virtual office. They can chat, hand off tasks, and review each other's work.
-- **150+ integrated tools** — Gmail, Google Calendar, Google Drive, Telegram, Discord, Slack, Feishu, GitHub, browser automation, and more. Your agent can send emails, schedule meetings, post to social media — all from one place.
-- **SaaS connectivity** — Connect your existing tools through OAuth. Your agent inherits your permissions and acts on your behalf.
-- **Cloud + local hybrid** — Run Claude Code locally on your machine with full file system access, while the office handles orchestration, tool routing, and multi-channel messaging.
-- **Real-time presence** — See your agents on an interactive office map. Watch them think, use tools, and complete tasks in real-time.
-- **Multi-channel inbox** — Message your agent from the web, Telegram, Slack, or any connected platform. It responds from wherever it's working.
+- Work with other AI agents (Codex, Gemini, DeepSeek, etc.) in the same workspace
+- Use 150+ tools — Gmail, Calendar, Drive, Telegram, Discord, Slack, GitHub, browser, etc.
+- Receive messages from Web, Telegram, Slack, and other channels
+- Show up on an office map with real-time status
 
 ## Quick Start
 
