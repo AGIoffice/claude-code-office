@@ -104,6 +104,8 @@ export function printClockInBanner({ agentHandle, model, seat, workspace }) {
   }
   console.log(chalk.cyan('  │') + chalk.dim('  Workspace: ') + chalk.white(workspace || process.cwd()))
   console.log(chalk.cyan('  │') + '                                         ' + chalk.cyan('│'))
+  console.log(chalk.cyan('  │') + chalk.dim('  Web UI:    ') + chalk.underline.cyan('https://beta.office.xyz'))
+  console.log(chalk.cyan('  │') + '                                         ' + chalk.cyan('│'))
   console.log(chalk.cyan('  │') + chalk.yellow('  Press Ctrl+C to clock out') + '              ' + chalk.cyan('│'))
   console.log(chalk.cyan('  └─────────────────────────────────────────┘'))
   console.log('')
@@ -280,9 +282,69 @@ async function createOffice(sessionToken) {
   }
 }
 
+// ── Role Selection ────────────────────────────────────────────────────────
+
+const ROLE_CATEGORIES = [
+  { id: 'business',  icon: '💼', label: 'Business',   description: 'Operations, Marketing, Sales, Support, Executive, HR' },
+  { id: 'science',   icon: '🔬', label: 'Science',    description: 'Research, Data Science, Bioinformatics, Lab, Clinical' },
+  { id: 'developer', icon: '💻', label: 'Developer',  description: 'Full-Stack, Frontend, Backend, DevOps, AI Engineering' },
+  { id: 'education', icon: '📖', label: 'Education',  description: 'Learning, Tutoring, Knowledge Exploration' },
+]
+
+const ROLES = [
+  // Business
+  { id: 'operations',  category: 'business',  icon: '📈', label: 'Operations' },
+  { id: 'marketing',   category: 'business',  icon: '📣', label: 'Marketing' },
+  { id: 'sales',       category: 'business',  icon: '🤝', label: 'Sales' },
+  { id: 'support',     category: 'business',  icon: '💬', label: 'Support' },
+  { id: 'executive',   category: 'business',  icon: '👔', label: 'Executive' },
+  { id: 'hr',          category: 'business',  icon: '👥', label: 'HR' },
+  // Science
+  { id: 'researcher',      category: 'science', icon: '🔬', label: 'Researcher' },
+  { id: 'data-scientist',  category: 'science', icon: '📊', label: 'Data Scientist' },
+  { id: 'bioinformatics',  category: 'science', icon: '🧬', label: 'Bioinformatics' },
+  { id: 'lab-manager',     category: 'science', icon: '🧪', label: 'Lab Manager' },
+  { id: 'clinical',        category: 'science', icon: '🏥', label: 'Clinical' },
+  // Developer
+  { id: 'fullstack', category: 'developer', icon: '🖥️', label: 'Full-Stack' },
+  { id: 'frontend',  category: 'developer', icon: '🎨', label: 'Frontend' },
+  { id: 'backend',   category: 'developer', icon: '⚙️',  label: 'Backend' },
+  { id: 'devops',    category: 'developer', icon: '🔧', label: 'DevOps' },
+  { id: 'ai-engineer', category: 'developer', icon: '🤖', label: 'AI Engineer' },
+  // Education
+  { id: 'learner', category: 'education', icon: '📖', label: 'Learner' },
+]
+
+async function selectRole() {
+  const category = await select({
+    message: 'What does your agent do?',
+    choices: ROLE_CATEGORIES.map(c => ({
+      name: `${c.icon} ${c.label}  ${chalk.dim(c.description)}`,
+      value: c.id,
+    })),
+  })
+
+  const rolesInCategory = ROLES.filter(r => r.category === category)
+
+  const roleId = await select({
+    message: 'Select a role:',
+    choices: rolesInCategory.map(r => ({
+      name: `${r.icon} ${r.label}`,
+      value: r.id,
+    })),
+  })
+
+  const role = ROLES.find(r => r.id === roleId)
+  return { roleId, roleCategory: category, roleLabel: role?.label || roleId }
+}
+
 // ── Agent Hire ────────────────────────────────────────────────────────────
 
 async function hireAgent(officeId, sessionToken) {
+  // 1. Select role
+  const { roleId, roleCategory, roleLabel } = await selectRole()
+
+  // 2. Name agent
   const agentName = await input({
     message: 'Name your Claude Code agent:',
     validate: (v) => {
@@ -294,15 +356,18 @@ async function hireAgent(officeId, sessionToken) {
     transformer: (v) => v.toLowerCase(),
   })
 
+  // 3. Hire
   const spinner = ora('Setting up agent...').start()
   try {
     const result = await api('POST', '/api/cli/office/hire', {
       officeId,
       agentName: agentName.trim().toLowerCase(),
       provider: 'claude-code',
+      roleId,
+      roleCategory,
     }, sessionToken)
 
-    spinner.succeed(`Agent ready: ${chalk.bold(result.agentHandle)}${result.seat ? chalk.dim(` (seat: ${result.seat})`) : ''}`)
+    spinner.succeed(`Agent ready: ${chalk.bold(result.agentHandle)} ${chalk.dim(`(${roleLabel})`)}${result.seat ? chalk.dim(` · seat: ${result.seat}`) : ''}`)
     return result
   } catch (err) {
     spinner.fail(`Failed to create agent: ${err.message}`)
@@ -335,6 +400,7 @@ export async function runOnboarding() {
       if (validation.success) {
         spinner.succeed(`Welcome back, ${chalk.bold(cached.email || cached.displayName || 'user')}!`)
         console.log(chalk.dim(`  Reconnecting as ${cached.lastAgent.handle}...`))
+        console.log(chalk.dim(`  Web interface: ${chalk.underline.cyan('https://beta.office.xyz')}`))
         return {
           agent: cached.lastAgent.handle,
           token: cached.lastAgent.connectionToken,
