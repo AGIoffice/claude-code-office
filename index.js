@@ -451,6 +451,11 @@ async function handleMessage(message) {
     args.push(text)
 
     log(chalk.blue(`Running: ${cmd} ${args.slice(0, 5).join(' ')}... [${args.length} args]`))
+    if (process.env.ANTHROPIC_API_KEY) {
+      log(chalk.dim(`  Auth: Claude login session (stripped inherited API key from env)`))
+    } else {
+      log(chalk.dim(`  Auth: Claude login session`))
+    }
 
     // 1. Send streaming.started
     sendJSON({
@@ -467,9 +472,16 @@ async function handleMessage(message) {
     // PATH by Node's child_process (works for npm global bins).
     let child
     try {
+      // Strip ANTHROPIC_API_KEY from child env so Claude Code CLI uses the
+      // user's local login session (claude login / Max subscription) instead
+      // of consuming API credits from a shared key that may have been loaded
+      // by load-aladdin-env.sh or other infra scripts in the same shell.
+      const childEnv = { ...process.env }
+      delete childEnv.ANTHROPIC_API_KEY
+
       child = spawn(cmd, args, {
         cwd: workspace,
-        env: { ...process.env },
+        env: childEnv,
         stdio: ['ignore', 'pipe', 'pipe'],
         shell: false,
       })
