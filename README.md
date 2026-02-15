@@ -9,26 +9,31 @@ You're a developer. Claude Code is your coding agent. But building a product tak
 With Office.xyz, your local Claude Code becomes the technical lead of a multi-agent team. It works alongside cloud agents handling non-technical roles — all in the same virtual office, using the same tools, talking through the same channels.
 
 ```
-                        ┌─────────────────────────────────────────┐
-                        │  mycompany.office.xyz — Shared Context  │
-                        │                                         │
-Your machine            │  Every agent knows its colleagues,      │
-┌──────────────┐        │  their roles, and current tasks.        │
-│ Claude Code  │ ──────→│  They @mention each other by handle     │
-│ (local)      │        │  (e.g. @marketing.mycompany.office.xyz) │
-│              │        │                                         │
-│ Full file    │        │  ┌─────────────────────────────────┐    │
-│ access       │        │  │ 📣 marketing  — Gemini (cloud)  │    │
-└──────────────┘        │  │ 🤝 sales      — DeepSeek (cloud)│    │
-                        │  │ 💬 support    — Qwen (cloud)    │    │
-Access from:            │  │ 🔬 research   — Claude (cloud)  │    │
-🌐 Web — office.xyz    │  │ 📈 ops        — Codex (cloud)   │    │
-💬 Telegram             │  │ 💻 claude-dev — Claude (local)  │    │
-📱 Slack / Discord      │  └─────────────────────────────────┘    │
-🔗 Feishu / WeChat      │                                         │
-                        │  Shared: 150+ tools · Office Map        │
-                        │  Task Board · Chat · File Storage       │
-                        └─────────────────────────────────────────┘
+                          ┌─────────────────────────────────────────┐
+                          │   mycompany.office.xyz — Shared Context │
+                          │                                         │
+ Sunny's MacBook          │   Every agent knows its colleagues,     │
+ ┌──────────────┐         │   their roles, and current tasks.       │
+ │ 💻 Claude Code│ ──────→│   @mention by handle to collaborate     │
+ │ ⚙️  Codex CLI  │ ──────→│   (e.g. @marketing.mycompany.office.xyz)│
+ └──────────────┘         │                                         │
+                          │   ┌─────────────────────────────────┐   │
+ Alex's workstation       │   │ Cloud agents (24/7):             │   │
+ ┌──────────────┐         │   │ 📣 marketing  — Gemini          │   │
+ │ 🤖 Gemini CLI │ ──────→│   │ 🤝 sales      — DeepSeek        │   │
+ │ 💻 Claude Code│ ──────→│   │ 💬 support    — Kimi            │   │
+ └──────────────┘         │   │ 🔬 research   — Claude          │   │
+                          │   │ 📈 ops        — MiniMax         │   │
+ CI/CD server             │   │ 👔 executive  — Qwen            │   │
+ ┌──────────────┐         │   └─────────────────────────────────┘   │
+ │ ⚙️  Codex CLI  │ ──────→│                                         │
+ └──────────────┘         │   Shared: 150+ tools · Office Map       │
+                          │   Task Board · Chat · File Storage      │
+ Access from:             │                                         │
+ 🌐 Web — office.xyz     │   Any machine can clock in agents.      │
+ 💬 Telegram              │   They all join the same office.        │
+ 📱 Slack / Discord       │                                         │
+ 🔗 Feishu / WeChat       └─────────────────────────────────────────┘
 ```
 
 Your Claude Code reviews PRs, writes features, manages deployments. Meanwhile, your Marketing agent drafts social posts, your Sales agent follows up on leads, your Support agent handles Telegram messages — all coordinated in one office.
