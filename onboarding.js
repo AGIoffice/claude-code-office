@@ -30,6 +30,55 @@ const CHAT_BRIDGE_URL =
 
 const PKG_NAME = '@office-xyz/claude-code'
 
+// ── Pre-flight Check ──────────────────────────────────────────────────────
+
+async function checkClaudeCodeCli() {
+  const { execSync } = await import('child_process')
+
+  // Check if claude is installed
+  let version = null
+  try {
+    version = execSync('claude --version', { encoding: 'utf-8', timeout: 5000 }).trim()
+  } catch {
+    console.log(chalk.red('  Claude Code CLI is not installed.'))
+    console.log('')
+    console.log(chalk.white('  Install it:'))
+    console.log(chalk.cyan('    curl -fsSL https://claude.ai/install.sh | bash'))
+    console.log('')
+    console.log(chalk.dim('  Or via npm: npm install -g @anthropic-ai/claude-code'))
+    console.log('')
+    process.exit(1)
+  }
+
+  console.log(chalk.dim(`  Detected: Claude Code ${version}`))
+
+  // Check if logged in by running a quick command
+  try {
+    const result = execSync('claude -p "ping" --output-format text --max-turns 1', {
+      encoding: 'utf-8',
+      timeout: 15000,
+      env: { ...process.env, ANTHROPIC_API_KEY: undefined },
+    })
+    // If we get any response, auth works
+    console.log(chalk.dim('  Auth: Claude login session ✓'))
+  } catch (err) {
+    const msg = (err.stderr || err.stdout || err.message || '').toLowerCase()
+    if (msg.includes('credit') || msg.includes('balance') || msg.includes('unauthorized') || msg.includes('auth')) {
+      console.log(chalk.red('  Claude Code is not logged in.'))
+      console.log('')
+      console.log(chalk.white('  Run this first:'))
+      console.log(chalk.cyan('    claude login'))
+      console.log('')
+      console.log(chalk.dim('  You need a Claude Pro, Max, or Team subscription.'))
+      console.log('')
+      process.exit(1)
+    }
+    // Other errors (timeout, etc.) — proceed anyway, might work
+    console.log(chalk.dim('  Auth: could not verify (will try anyway)'))
+  }
+  console.log('')
+}
+
 // ── Update Check ──────────────────────────────────────────────────────────
 
 /**
@@ -338,13 +387,79 @@ async function selectRole() {
   return { roleId, roleCategory: category, roleLabel: role?.label || roleId }
 }
 
-// ── Agent Hire ────────────────────────────────────────────────────────────
+// ── Agent Selection / Hire ─────────────────────────────────────────────────
 
-async function hireAgent(officeId, sessionToken) {
-  // 1. Select role
+const PROVIDER_LABELS = {
+  claude: 'Claude Code',
+  anthropic: 'Claude',
+  openai: 'Codex',
+  gemini: 'Gemini',
+  deepseek: 'DeepSeek',
+  qwen: 'Qwen',
+  kimi: 'Kimi',
+  ollama: 'Ollama',
+}
+
+async function selectOrHireAgent(officeId, sessionToken) {
+  // 1. Check for existing agents in this office
+  let existingAgents = []
+  try {
+    const data = await api('GET', `/api/cli/office/${encodeURIComponent(officeId)}/agents`, null, sessionToken)
+    existingAgents = data.agents || []
+  } catch {
+    // Continue — will go straight to hire
+  }
+
+  // Only show local Claude agents — cloud agents and non-Claude agents can't be clocked in from this CLI
+  const localAgents = existingAgents.filter(a =>
+    a.deploymentMode === 'local' &&
+    (a.provider === 'claude' || a.provider === 'claude-code' || a.provider === 'anthropic')
+  )
+
+  if (localAgents.length > 0) {
+    // Show local agents + option to hire new
+    const providerLabel = (p) => PROVIDER_LABELS[p] || p || 'unknown'
+
+    const choices = [
+      ...localAgents.map(a => ({
+        name: `${a.name}  ${chalk.dim(`${a.role} · ${providerLabel(a.provider)} · ${a.seat || 'no seat'}`)}`,
+        value: a.id,
+      })),
+      {
+        name: chalk.cyan('+ Hire a new agent'),
+        value: '__hire__',
+      },
+    ]
+
+    const choice = await select({
+      message: 'Select an agent to clock in:',
+      choices,
+    })
+
+    if (choice !== '__hire__') {
+      // Reconnect existing agent
+      const agent = localAgents.find(a => a.id === choice)
+      const spinner = ora('Reconnecting...').start()
+      try {
+        const result = await api('POST', '/api/cli/office/hire', {
+          officeId,
+          agentName: agent.name,
+          provider: 'claude-code',
+        }, sessionToken)
+
+        spinner.succeed(`Reconnected: ${chalk.bold(result.agentHandle)} ${chalk.dim(`(${agent.role})`)}${result.seat ? chalk.dim(` · seat: ${result.seat}`) : ''}`)
+        return result
+      } catch (err) {
+        spinner.fail(`Failed to reconnect: ${err.message}`)
+        process.exit(1)
+      }
+    }
+  }
+
+  // 2. Hire new agent: select role
   const { roleId, roleCategory, roleLabel } = await selectRole()
 
-  // 2. Name agent
+  // 3. Name agent
   const agentName = await input({
     message: 'Name your Claude Code agent:',
     validate: (v) => {
@@ -356,7 +471,7 @@ async function hireAgent(officeId, sessionToken) {
     transformer: (v) => v.toLowerCase(),
   })
 
-  // 3. Hire
+  // 4. Hire
   const spinner = ora('Setting up agent...').start()
   try {
     const result = await api('POST', '/api/cli/office/hire', {
@@ -389,6 +504,9 @@ export async function runOnboarding() {
   // Check for updates (non-blocking, runs in background)
   checkForUpdate()
 
+  // 0. Pre-flight: check Claude Code CLI is installed and logged in
+  await checkClaudeCodeCli()
+
   // 1. Check cached session
   const cached = loadSession()
 
@@ -419,8 +537,8 @@ export async function runOnboarding() {
   // 3. Select or create office
   const { officeId, domain } = await selectOrCreateOffice(offices, session.sessionToken)
 
-  // 4. Name and hire agent
-  const hired = await hireAgent(officeId, session.sessionToken)
+  // 4. Select existing agent or hire new
+  const hired = await selectOrHireAgent(officeId, session.sessionToken)
 
   // 5. Save session
   saveSession({

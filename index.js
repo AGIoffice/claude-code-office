@@ -246,6 +246,8 @@ if (argv.agent) {
 let wsRef = null
 let reconnectAttempts = 0
 const MAX_RECONNECT_DELAY_MS = 30_000
+let registryHeartbeatTimer = null
+const REGISTRY_HEARTBEAT_INTERVAL_MS = 30_000  // Report liveness to Registry every 30s
 const workspace = path.resolve(argv.workspace)
 const model = argv.model || providerConfig.defaultModel
 
@@ -1008,6 +1010,11 @@ function connect() {
 
     sendHostMeta(ws)
 
+    // Registry heartbeat: report liveness independently of WS ping/pong.
+    // This lets Chat Bridge know the agent process is alive even during
+    // brief WS reconnection windows.
+    startRegistryHeartbeat()
+
     // Build system prompt and register MCP server (first-class citizen setup)
     log(chalk.blue('Setting up agent identity and tools...'))
     if (!cachedSystemPrompt) {
@@ -1051,6 +1058,8 @@ function connect() {
     log(chalk.red(`Disconnected (${code} ${reasonStr})`))
     wsRef = null
     stopHeartbeat()
+    // Keep registry heartbeat running during reconnection — it's independent
+    // of the WS connection and tells Chat Bridge the process is still alive.
 
     // Kill all active CLI processes on disconnect
     for (const [, entry] of activeChildren) {
@@ -1081,6 +1090,53 @@ function scheduleReconnect() {
   const delay = Math.min(2000 * Math.pow(1.5, reconnectAttempts - 1), MAX_RECONNECT_DELAY_MS)
   log(chalk.yellow(`Reconnecting in ${(delay / 1000).toFixed(1)}s (attempt ${reconnectAttempts})...`))
   setTimeout(connect, delay)
+}
+
+// ── Registry Heartbeat ────────────────────────────────────────────────────
+// Reports agent liveness to Registry via Chat Bridge, independent of WS state.
+// This ensures Chat Bridge knows the agent process is alive even during
+// WS reconnection (up to 30s exponential backoff window).
+
+function startRegistryHeartbeat() {
+  if (registryHeartbeatTimer) return  // already running
+  const agentHandle = argv.agent
+  if (!agentHandle) return
+
+  const chatBridgeHttpUrl =
+    process.env.CHAT_BRIDGE_HTTP_URL ||
+    process.env.CHAT_BRIDGE_URL ||
+    process.env.CHAT_BRIDGE_BASE_URL ||
+    'https://chatbridge.aladdinagi.xyz'
+
+  const sendHeartbeat = async () => {
+    try {
+      const url = `${chatBridgeHttpUrl}/api/${encodeURIComponent(agentHandle)}/heartbeat`
+      const resp = await fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ timestamp: new Date().toISOString() }),
+        signal: AbortSignal.timeout(10000),
+      })
+      if (!resp.ok) {
+        const text = await resp.text().catch(() => '')
+        log(chalk.dim(`[heartbeat] Registry heartbeat failed: ${resp.status} ${text}`))
+      }
+    } catch (err) {
+      // Silent — heartbeat failures are non-critical
+      log(chalk.dim(`[heartbeat] ${err.message}`))
+    }
+  }
+
+  // Send immediately, then every 30s
+  sendHeartbeat()
+  registryHeartbeatTimer = setInterval(sendHeartbeat, REGISTRY_HEARTBEAT_INTERVAL_MS)
+}
+
+function stopRegistryHeartbeat() {
+  if (registryHeartbeatTimer) {
+    clearInterval(registryHeartbeatTimer)
+    registryHeartbeatTimer = null
+  }
 }
 
 // ── Local Device Connection (file system access for Workspace Panel) ───────
@@ -1256,7 +1312,8 @@ async function executeLocalTool(toolName, params) {
 function shutdown() {
   console.log('')
   log(chalk.yellow('Clocking out...'))
-  // Unregister MCP server so it doesn't linger in ~/.claude.json
+  // Stop registry heartbeat and unregister MCP server
+  stopRegistryHeartbeat()
   unregisterMcpServer()
   for (const [, entry] of activeChildren) {
     try { entry?.child?.kill('SIGTERM') } catch { /* ignore */ }
