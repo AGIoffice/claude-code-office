@@ -892,19 +892,36 @@ function connect() {
   const ws = new WebSocket(managerUrl.href)
   wsRef = ws
 
-  const pingMs = 10_000
+  const PING_INTERVAL_MS = 10_000
+  const PONG_TIMEOUT_MS = 8_000   // must be < PING_INTERVAL_MS
   let pingTimer = null
+  let pongTimer = null
+  let isAlive = false
+
+  const stopHeartbeat = () => {
+    if (pingTimer) { clearInterval(pingTimer); pingTimer = null }
+    if (pongTimer) { clearTimeout(pongTimer); pongTimer = null }
+  }
 
   ws.on('open', async () => {
     log(chalk.green('Connected to Virtual Office'))
     reconnectAttempts = 0
+    isAlive = true
 
-    // Keepalive pings
+    // Heartbeat: ping + pong timeout detection (matches cloud managerHostProxy pattern)
     pingTimer = setInterval(() => {
-      if (ws.readyState === WebSocket.OPEN) {
-        try { ws.ping() } catch { /* ignore */ }
+      if (ws.readyState !== WebSocket.OPEN) { stopHeartbeat(); return }
+      if (!isAlive) {
+        log(chalk.red('Heartbeat timeout — no pong received, forcing reconnect'))
+        stopHeartbeat()
+        try { ws.terminate() } catch { /* ignore */ }
+        return
       }
-    }, pingMs)
+      isAlive = false
+      try { ws.ping() } catch { /* ignore */ }
+    }, PING_INTERVAL_MS)
+
+    ws.on('pong', () => { isAlive = true })
 
     sendHostMeta(ws)
 
@@ -950,7 +967,7 @@ function connect() {
     const reasonStr = reason?.toString() || ''
     log(chalk.red(`Disconnected (${code} ${reasonStr})`))
     wsRef = null
-    if (pingTimer) clearInterval(pingTimer)
+    stopHeartbeat()
 
     // Kill all active CLI processes on disconnect
     for (const [, entry] of activeChildren) {
@@ -1006,8 +1023,17 @@ function connectLocalDevice() {
   const dws = new WebSocket(deviceUrl)
   deviceWsRef = dws
 
+  const DEVICE_PING_INTERVAL_MS = 25_000
+  const DEVICE_PONG_TIMEOUT_MS = 10_000
+  let deviceIsAlive = false
+
+  const stopDeviceHeartbeat = () => {
+    if (devicePingTimer) { clearInterval(devicePingTimer); devicePingTimer = null }
+  }
+
   dws.on('open', () => {
     log(chalk.green('Local device connected'))
+    deviceIsAlive = true
     const agentHandle = argv.agent
     const officeId = agentHandle.split('.').slice(1).join('.')
     // Register as agent-bound device (NOT office-wide).
@@ -1029,13 +1055,21 @@ function connectLocalDevice() {
       },
     }))
 
-    // Keepalive ping every 30s to prevent Cloudflare/ALB idle timeout
-    if (devicePingTimer) clearInterval(devicePingTimer)
+    // Heartbeat: ping + pong timeout detection
+    stopDeviceHeartbeat()
     devicePingTimer = setInterval(() => {
-      if (dws.readyState === WebSocket.OPEN) {
-        try { dws.ping() } catch { /* ignore */ }
+      if (dws.readyState !== WebSocket.OPEN) { stopDeviceHeartbeat(); return }
+      if (!deviceIsAlive) {
+        log(chalk.red('[device] Heartbeat timeout — no pong received, forcing reconnect'))
+        stopDeviceHeartbeat()
+        try { dws.terminate() } catch { /* ignore */ }
+        return
       }
-    }, 30_000)
+      deviceIsAlive = false
+      try { dws.ping() } catch { /* ignore */ }
+    }, DEVICE_PING_INTERVAL_MS)
+
+    dws.on('pong', () => { deviceIsAlive = true })
   })
 
   dws.on('message', async (data) => {
@@ -1058,7 +1092,7 @@ function connectLocalDevice() {
   dws.on('close', (code) => {
     log(chalk.yellow(`Local device disconnected (${code})`))
     deviceWsRef = null
-    if (devicePingTimer) { clearInterval(devicePingTimer); devicePingTimer = null }
+    stopDeviceHeartbeat()
     // Reconnect after delay (only if not shutting down)
     if (code !== 1000) {
       deviceReconnectTimer = setTimeout(connectLocalDevice, 5000)
