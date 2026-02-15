@@ -2,6 +2,12 @@
 
 All notable changes to `@office-xyz/claude-code` will be documented in this file.
 
+## [0.1.1] - 2026-02-15
+
+### Fixed
+- Fix crash when running `npx @office-xyz/claude-code` without `--agent` flag (`argv.agent` undefined → `.split()` TypeError)
+- `label` variable now defaults to `'local-host'` in interactive onboarding mode and updates after onboarding completes
+
 ## [0.1.0] - 2026-02-15
 
 ### Added

@@ -144,7 +144,7 @@ function shellEscapeArg(s) {
 
 // ── Logging ────────────────────────────────────────────────────────────────
 
-const label = argv.agent.split('.')[0] || argv.agent
+let label = argv.agent ? (argv.agent.split('.')[0] || argv.agent) : 'local-host'
 function log(...args) {
   console.log(chalk.dim(`[${new Date().toISOString()}][${label}]`), ...args)
 }
@@ -1232,6 +1232,7 @@ async function startup() {
     argv.agent = result.agent
     argv.token = result.token
     hostId = result.agent
+    label = result.agent.split('.')[0] || result.agent
 
     // Rebuild manager URL with new agent/token
     const newManagerUrl = new URL(argv.manager)
