@@ -23,7 +23,28 @@ import { execSync } from 'child_process'
 import path from 'path'
 import os from 'os'
 import { fileURLToPath } from 'url'
-import { normalizeToolName } from '../prompt/toolNameNormalizer.js'
+// Inline tool name normalizer (can't import from parent CJS package — ESM/CJS conflict)
+// Maps raw CLI tool names to standard frontend TOOL_CONFIG keys
+const TOOL_NAME_MAP = {
+  // Codex CLI
+  command_execution: 'Bash', file_edit: 'FileEdit', file_read: 'FileRead',
+  file_change: 'FileEdit', file_write: 'FileWrite', web_search: 'WebSearch',
+  mcp_call: 'Mcp', mcp_tool_call: 'Mcp', unknown_tool: 'default',
+  // Gemini CLI
+  shell: 'Bash', edit: 'Edit', read: 'Read', write: 'Write',
+  search_files: 'Grep', list_files: 'LS', web_fetch: 'WebFetch', google_search: 'WebSearch',
+  // Kimi / DeepSeek / Qwen CLI
+  execute_command: 'Bash', read_file: 'Read', write_file: 'Write', edit_file: 'Edit',
+  search: 'Grep', run_command: 'Bash', code_edit: 'FileEdit', code_search: 'Grep',
+  terminal: 'Bash', file_operation: 'FileEdit',
+  // General aliases
+  bash: 'Bash', grep: 'Grep', glob: 'Glob', ls: 'LS',
+}
+function normalizeToolName(rawName) {
+  if (!rawName || typeof rawName !== 'string') return 'default'
+  const lower = rawName.toLowerCase()
+  return TOOL_NAME_MAP[lower] || TOOL_NAME_MAP[rawName] || rawName
+}
 
 const __filename = fileURLToPath(import.meta.url)
 const __dirname = path.dirname(__filename)

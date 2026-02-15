@@ -2,6 +2,12 @@
 
 All notable changes to `@office-xyz/claude-code` will be documented in this file.
 
+## [0.1.2] - 2026-02-15
+
+### Changed
+- Integrate public repo sync into npm publish workflow
+- Fall back to Cloudflare URL for SSE/WebSocket connections
+
 ## [0.1.1] - 2026-02-15
 
 ### Fixed
