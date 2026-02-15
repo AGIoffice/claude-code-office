@@ -275,33 +275,66 @@ let cachedSystemPrompt = null
 let mcpConfigPath = null
 
 /**
- * Build the system prompt from Registry metadata (same as cloud host adapters).
- * This gives the local agent its identity, office context, and tool manuals.
+ * Build the system prompt by fetching from Chat Bridge.
+ * Chat Bridge has access to Registry, promptAssembler, tool manuals, etc.
+ * This avoids needing monorepo-local imports (../prompt/index.mjs) that
+ * don't exist in the npm package.
+ *
+ * Falls back to a minimal default prompt if chat-bridge is unreachable.
  */
 async function buildAgentSystemPrompt() {
-  try {
-    // Dynamic import — the prompt module is ESM
-    const { buildSystemPrompt } = await import('../prompt/index.mjs')
-    const agentHandle = argv.agent
-    const officeId = agentHandle.split('.').slice(1).join('.')
+  const agentHandle = argv.agent
+  if (!agentHandle || agentHandle === 'pending') return null
 
+  const officeId = agentHandle.split('.').slice(1).join('.')
+
+  // Method 1: Fetch from Chat Bridge API (works in npm package)
+  const chatBridgeUrl =
+    process.env.CHAT_BRIDGE_HTTP_URL ||
+    process.env.CHAT_BRIDGE_URL ||
+    'https://chatbridge.aladdinagi.xyz'
+
+  try {
+    const controller = new AbortController()
+    const timeout = setTimeout(() => controller.abort(), 8000)
+
+    const res = await fetch(`${chatBridgeUrl}/api/cli/system-prompt/${encodeURIComponent(agentHandle)}`, {
+      signal: controller.signal,
+      headers: { 'Accept': 'application/json' },
+    })
+    clearTimeout(timeout)
+
+    if (res.ok) {
+      const data = await res.json()
+      const prompt = data.prompt || data.systemPrompt || null
+      if (prompt && prompt.length > 100) {
+        log(chalk.green(`System prompt fetched from Chat Bridge (${prompt.length} chars)`))
+        return prompt
+      }
+    }
+  } catch (err) {
+    log(chalk.dim(`Chat Bridge prompt fetch failed: ${err.message}`))
+  }
+
+  // Method 2: Try local monorepo import (works in dev, not in npm package)
+  try {
+    const { buildSystemPrompt } = await import('../prompt/index.mjs')
     const prompt = await buildSystemPrompt({
       agentHandle,
       officeId,
       workspaceRoot: workspace,
       platform: `${os.platform()}-${os.arch()}`,
     })
-
     if (prompt && prompt.length > 100) {
-      log(chalk.green(`System prompt built (${prompt.length} chars)`))
+      log(chalk.green(`System prompt built locally (${prompt.length} chars)`))
       return prompt
     }
-    log(chalk.yellow('System prompt too short or empty, using default'))
-    return null
-  } catch (err) {
-    log(chalk.yellow(`Failed to build system prompt: ${err.message}`))
-    return null
+  } catch {
+    // Expected in npm package — no local prompt module
   }
+
+  log(chalk.yellow('Using default system prompt'))
+  return null
 }
 
 /**
