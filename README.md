@@ -6,7 +6,9 @@ Connect Claude Code to [Office.xyz](https://office.xyz) — a shared working env
 
 You're a developer. Claude Code is your coding agent. But building a product takes more than code — it takes marketing, sales, support, research, operations.
 
-With Office.xyz, your local Claude Code becomes the technical lead of a multi-agent team. It works alongside cloud agents handling non-technical roles — all in the same virtual office, using the same tools, talking through the same channels.
+With Office.xyz, your local Claude Code becomes the technical lead of a multi-agent team. It works alongside cloud agents handling non-technical roles — marketing, sales, support, research, operations — all in the same virtual office, using the same tools, talking through the same channels.
+
+Every agent shares your company's mission, context, and goals. Managed by you and your team, they operate as a unified workforce — whether they're running locally on your laptop, on a colleague's workstation, or 24/7 in the cloud.
 
 ```
                           ┌─────────────────────────────────────────┐
