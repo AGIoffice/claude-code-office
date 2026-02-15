@@ -23,6 +23,7 @@ import { execSync } from 'child_process'
 import path from 'path'
 import os from 'os'
 import { fileURLToPath } from 'url'
+import { normalizeToolName } from '../prompt/toolNameNormalizer.js'
 
 const __filename = fileURLToPath(import.meta.url)
 const __dirname = path.dirname(__filename)
@@ -506,14 +507,16 @@ async function handleMessage(message) {
     const emitToolStart = ({ toolUseId, toolName, input, timestamp }) => {
       const normalizedId = toolUseId || `tool-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
       const startedAt = Number.isFinite(timestamp) ? timestamp : Date.now()
-      activeToolsById.set(normalizedId, { toolName: toolName || 'tool', input, startedAt })
+      // Normalize tool names for consistent frontend display across all CLI providers
+      const normalized = normalizeToolName(toolName || 'tool')
+      activeToolsById.set(normalizedId, { toolName: normalized, input, startedAt })
       sendJSON({
         type: 'tool_event',
         sessionId,
         commandId,
         event: {
           eventType: 'tool_start',
-          toolName: toolName || 'tool',
+          toolName: normalized,
           toolUseId: normalizedId,
           input,
           status: 'running',
@@ -527,7 +530,8 @@ async function handleMessage(message) {
       if (finalizedToolIds.has(toolUseId) && !force) return
       finalizedToolIds.add(toolUseId)
       const endedAt = Number.isFinite(timestamp) ? timestamp : Date.now()
-      const resolvedTool = toolName || activeToolsById.get(toolUseId)?.toolName || 'tool'
+      const rawTool = toolName || activeToolsById.get(toolUseId)?.toolName || 'tool'
+      const resolvedTool = normalizeToolName(rawTool)
       const resolvedInput = input ?? activeToolsById.get(toolUseId)?.input
       const status = error ? 'error' : 'completed'
       const compactResult = compactToolValue(result)
@@ -578,6 +582,29 @@ async function handleMessage(message) {
             fullText += chunk
             sendJSON({ type: 'streaming.delta', sessionId, commandId, chunk })
             process.stdout.write(chunk) // local echo
+          }
+          return
+        }
+
+        // Input JSON deltas — accumulate tool input as it streams in
+        // Claude CLI sends tool input progressively: content_block_start has input: {},
+        // then input_json_delta events carry the actual JSON. Without accumulating these,
+        // tool indicators show "(no command)" because input is empty.
+        if (streamEvent?.type === 'content_block_delta' && streamEvent?.delta?.type === 'input_json_delta') {
+          const partialJson = streamEvent.delta.partial_json || ''
+          if (blockIndex !== null) {
+            const toolState = activeToolsByIndex.get(blockIndex)
+            if (toolState) {
+              // Accumulate raw JSON string — we'll parse the complete object later
+              if (!toolState._inputJsonBuffer) toolState._inputJsonBuffer = ''
+              toolState._inputJsonBuffer += partialJson
+              // Try to parse accumulated JSON to update input (best-effort)
+              try {
+                toolState.input = JSON.parse(toolState._inputJsonBuffer)
+              } catch {
+                // Not complete JSON yet — that's fine, keep accumulating
+              }
+            }
           }
           return
         }
@@ -707,11 +734,34 @@ async function handleMessage(message) {
 
         // Message event with assistant content
         if (event.type === 'message' && event.message?.role === 'assistant') {
-          // Extract text from content blocks
           const content = event.message.content || []
           for (const block of content) {
+            // Extract text blocks
             if (block.type === 'text' && block.text) {
               if (!fullText) fullText = block.text
+            }
+            // Extract complete tool_use input — the assistant message contains the
+            // fully accumulated input (unlike content_block_start which has {}).
+            // This allows us to retroactively update tool events with real input data.
+            if (block.type === 'tool_use' && block.id && block.input) {
+              const existing = activeToolsById.get(block.id)
+              if (existing && (!existing.input || Object.keys(existing.input).length === 0)) {
+                existing.input = block.input
+                // Re-emit tool_start with complete input so frontend can display details
+                sendJSON({
+                  type: 'tool_event',
+                  sessionId,
+                  commandId,
+                  event: {
+                    eventType: 'tool_start',
+                    toolName: existing.toolName,
+                    toolUseId: block.id,
+                    input: block.input,
+                    status: 'running',
+                    timestamp: existing.startedAt || now,
+                  },
+                })
+              }
             }
           }
           return
