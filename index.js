@@ -1286,6 +1286,41 @@ async function executeLocalTool(toolName, params) {
   switch (toolName) {
     case 'list_files': {
       const dirPath = path.resolve(workspace, params.path || '.')
+      const maxDepth = params.maxDepth || 1
+      const IGNORED = new Set(['.git', 'node_modules', '__pycache__', '.next', '.venv', 'dist', '.cache'])
+
+      async function buildTree(dir, depth) {
+        let entries
+        try { entries = await fs.readdir(dir, { withFileTypes: true }) } catch { return [] }
+        const nodes = []
+        for (const entry of entries) {
+          if (entry.name.startsWith('.') && IGNORED.has(entry.name)) continue
+          if (IGNORED.has(entry.name)) continue
+          const fullPath = path.join(dir, entry.name)
+          const isDir = entry.isDirectory()
+          const node = { name: entry.name, path: fullPath, type: isDir ? 'directory' : 'file' }
+          try {
+            const stat = await fs.stat(fullPath)
+            node.size = stat.size
+            node.modifiedAt = stat.mtime.toISOString()
+          } catch { /* skip stat errors */ }
+          if (isDir && depth < maxDepth) {
+            node.children = await buildTree(fullPath, depth + 1)
+          }
+          nodes.push(node)
+        }
+        nodes.sort((a, b) => {
+          if (a.type !== b.type) return a.type === 'directory' ? -1 : 1
+          return a.name.localeCompare(b.name)
+        })
+        return nodes
+      }
+
+      if (maxDepth > 1) {
+        const children = await buildTree(dirPath, 1)
+        return { files: children, tree: true }
+      }
+      // Original flat mode (backward compatible)
       const entries = await fs.readdir(dirPath, { withFileTypes: true })
       const files = await Promise.all(entries.map(async (entry) => {
         const fullPath = path.join(dirPath, entry.name)
