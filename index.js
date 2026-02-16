@@ -98,6 +98,10 @@ const argv = yargs(hideBin(process.argv))
     type: 'string',
     describe: 'Override the CLI binary (e.g. /usr/local/bin/claude)',
   })
+  .option('channel', {
+    type: 'string',
+    describe: 'Only show messages from this channel (web, telegram, slack, discord, office, feishu, wechat)',
+  })
   .example('$0', 'Interactive setup (login, create office, name agent)')
   .example('$0 --agent claude.my.office.xyz --token xxx', 'Direct connect (skip login)')
   .help()
@@ -346,7 +350,10 @@ async function registerMcpServer() {
   try {
     const agentHandle = argv.agent
     const officeId = agentHandle.split('.').slice(1).join('.')
-    const mcpServerPath = path.resolve(__dirname, '../mcp-server/skyoffice-mcp-server.js')
+    // Use the lightweight MCP server bundled with the npm package.
+    // It fetches tool schemas from Chat Bridge and proxies all calls via HTTP,
+    // so it doesn't need the 150+ monorepo files that the full MCP server requires.
+    const mcpServerPath = path.resolve(__dirname, 'mcp-server-lite.cjs')
 
     const chatBridgeUrl = process.env.CHAT_BRIDGE_URL ||
       process.env.CHAT_BRIDGE_BASE_URL ||
@@ -395,6 +402,47 @@ function unregisterMcpServer() {
     execSync(`claude mcp remove ${mcpName}`, { stdio: 'ignore', timeout: 5000 })
     log(chalk.dim(`MCP server '${mcpName}' unregistered`))
   } catch { /* ignore */ }
+}
+
+// ── Channel resolution ─────────────────────────────────────────────────────
+
+/**
+ * Resolve message channel from platformInfo / metadata / sessionId.
+ * Returns { type, color, sender, chatId } for display formatting.
+ */
+function resolveChannel(message) {
+  const platformInfo = message.platformInfo || {}
+  const meta = message.metadata || {}
+  const source = meta.source || platformInfo.clientType || ''
+  const sessionId = message.sessionId || ''
+
+  if (source.includes('telegram')) {
+    const from = meta.telegram?.from
+    const name = from?.username ? `@${from.username}` : from?.firstName || 'user'
+    return { type: 'Telegram', color: 'blue', sender: name, chatId: platformInfo.chatId }
+  }
+  if (source.includes('slack')) {
+    const channel = meta.slack?.channelId || platformInfo.channelId || ''
+    const user = meta.slack?.username || 'user'
+    return { type: 'Slack', color: 'magenta', sender: channel ? `#${channel} — ${user}` : user, chatId: null }
+  }
+  if (source.includes('discord')) {
+    return { type: 'Discord', color: 'blueBright', sender: meta.discord?.username || 'user', chatId: null }
+  }
+  if (source.includes('feishu') || source.includes('lark')) {
+    return { type: 'Feishu', color: 'cyan', sender: meta.feishu?.username || 'user', chatId: null }
+  }
+  if (source.includes('wecom') || source.includes('wechat') || source.includes('whatsapp')) {
+    const label = source.includes('whatsapp') ? 'WhatsApp' : 'WeChat'
+    return { type: label, color: 'green', sender: 'user', chatId: null }
+  }
+  if (sessionId.includes('office-wide')) {
+    const senderParts = sessionId.split('--')
+    return { type: 'Office Chat', color: 'greenBright', sender: senderParts[0] || 'colleague', chatId: null }
+  }
+  // Default: Web dialog
+  const userId = sessionId.split('--')[1] || 'user'
+  return { type: 'Web', color: 'cyanBright', sender: userId.slice(0, 20), chatId: null }
 }
 
 // ── Message handling ───────────────────────────────────────────────────────
@@ -454,8 +502,16 @@ async function handleMessage(message) {
     const sessionId = message.sessionId || null
     const commandId = message.commandId || message.messageId || `cmd-${Date.now()}`
 
-    const sessionLabel = sessionId ? sessionId.split('--')[1]?.slice(0, 15) || sessionId.slice(0, 20) : 'default'
-    log(chalk.cyan(`→ [${sessionLabel}] ${text.slice(0, 80)}${text.length > 80 ? '...' : ''}`))
+    const channel = resolveChannel(message)
+
+    // --channel filter: skip messages not matching the requested channel
+    if (argv.channel && !channel.type.toLowerCase().includes(argv.channel.toLowerCase())) return
+
+    const badge = chalk[channel.color](`[${channel.type}]`)
+    const time = new Date().toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' })
+    const sender = chalk.dim(channel.sender)
+    log(`${badge} ${chalk.dim(time)}  ${sender}`)
+    log(`  ${text.slice(0, 200)}${text.length > 200 ? '...' : ''}`)
 
     // Kill previous command for THIS SESSION only. Other sessions continue in parallel.
     const prev = sessionId ? activeChildren.get(sessionId) : null
@@ -522,6 +578,19 @@ async function handleMessage(message) {
       status: 'running',
       startedAt: new Date().toISOString(),
     })
+
+    // Heartbeat: Send periodic streaming.heartbeat during long-running claude -p execution.
+    // This prevents WS proxies (Cloudflare 100s, ALB 60s) from killing idle connections
+    // when Claude Code is thinking but not emitting any streaming tokens.
+    const HEARTBEAT_INTERVAL_MS = 25_000 // 25s — below Cloudflare/ALB idle timeouts
+    const heartbeatTimer = setInterval(() => {
+      sendJSON({
+        type: 'streaming.heartbeat',
+        sessionId,
+        commandId,
+        timestamp: Date.now(),
+      })
+    }, HEARTBEAT_INTERVAL_MS)
 
     // 2. Spawn the CLI process
     // shell: false — args are passed directly to the process as an array,
@@ -867,6 +936,7 @@ async function handleMessage(message) {
 
     // 4. On process exit, send completion events
     child.on('close', (code) => {
+      clearInterval(heartbeatTimer) // Stop heartbeat — task is done
       if (sessionId && activeChildren.get(sessionId)?.child === child) activeChildren.delete(sessionId)
 
       // Clean up system prompt temp file
@@ -882,7 +952,7 @@ async function handleMessage(message) {
 
       if (fullText) {
         process.stdout.write('\n')
-        log(chalk.green(`← ${fullText.slice(0, 80)}${fullText.length > 80 ? '...' : ''}`))
+        log(chalk[channel.color](`[${channel.type}] ←`) + chalk.dim(` ${fullText.slice(0, 120)}${fullText.length > 120 ? '...' : ''}`))
       }
 
       // Send streaming.completed
@@ -964,6 +1034,7 @@ async function handleMessage(message) {
     })
 
     child.on('error', (err) => {
+      clearInterval(heartbeatTimer) // Stop heartbeat on error
       log(chalk.red(`CLI process error: ${err.message}`))
       if (err.code === 'ENOENT') {
         log(chalk.yellow(`"${cmd}" not found. Install it with: ${providerConfig.installHint}`))

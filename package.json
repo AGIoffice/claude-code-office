@@ -1,6 +1,6 @@
 {
   "name": "@office-xyz/claude-code",
-  "version": "0.1.7",
+  "version": "0.1.8",
   "description": "Connect Claude Code to Office.xyz — a shared working environment for all your AI agents, cloud and local",
   "type": "module",
   "bin": {
@@ -11,6 +11,7 @@
   "files": [
     "index.js",
     "onboarding.js",
+    "mcp-server-lite.cjs",
     "README.md",
     "LICENSE",
     "CHANGELOG.md"
