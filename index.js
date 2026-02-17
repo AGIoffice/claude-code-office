@@ -644,6 +644,7 @@ async function handleMessage(message) {
     const rl = createInterface({ input: child.stdout })
     let fullText = ''
     let resultSessionId = null
+    let isApiError = false  // Track if this session encountered an API/auth error
     const activeToolsByIndex = new Map()
     const activeToolsById = new Map()
     const finalizedToolIds = new Set()
@@ -901,6 +902,10 @@ async function handleMessage(message) {
         // Final result message (type=result from claude -p --output-format stream-json)
         if (event.type === 'result') {
           resultSessionId = event.session_id || null
+          // Detect API errors in result (e.g. 403 Forbidden, auth failures)
+          if (event.is_error || event.isApiErrorMessage) {
+            isApiError = true
+          }
           if (event.result && !fullText) {
             fullText = event.result
           }
@@ -910,6 +915,10 @@ async function handleMessage(message) {
         // Message event with assistant content
         if (event.type === 'message' && event.message?.role === 'assistant') {
           const content = event.message.content || []
+          // Detect API error messages (synthetic responses from Claude CLI on auth/API failures)
+          if (event.message.isApiErrorMessage || event.isApiErrorMessage || event.error) {
+            isApiError = true
+          }
           for (const block of content) {
             // Extract text blocks
             if (block.type === 'text' && block.text) {
@@ -1015,6 +1024,10 @@ async function handleMessage(message) {
       const text = chunk.toString()
       if (text.trim()) {
         log(chalk.dim(`[stderr] ${text.trim().slice(0, 200)}`))
+        // Detect API/auth errors from stderr (e.g. "API Error: 403", "Failed to authenticate")
+        if (/API Error:\s*4\d{2}|Failed to authenticate|forbidden|Request not allowed/i.test(text)) {
+          isApiError = true
+        }
       }
     })
 
@@ -1028,11 +1041,31 @@ async function handleMessage(message) {
         try { require('fs').unlinkSync(systemPromptTmpFile) } catch { /* ignore */ }
       }
 
-      // Store Claude session_id for conversation continuity
+      // Store Claude session_id for conversation continuity.
+      // IMPORTANT: Do NOT save bindings for failed sessions (API errors, auth failures).
+      // Resuming a session that only contains an error message causes the next conversation
+      // to appear as "new" since there's no meaningful context to resume.
+      // Also detect errors from response text (Claude CLI wraps API errors as text content)
+      if (!isApiError && fullText && /API Error:\s*4\d{2}|Failed to authenticate|"type":"forbidden"/i.test(fullText)) {
+        isApiError = true
+      }
       if (resultSessionId && sessionId) {
-        sessionMap.set(sessionId, resultSessionId)
-        persistSessionMap()
-        log(chalk.dim(`Session mapped: ${sessionId} → ${resultSessionId}`))
+        if (isApiError) {
+          // Remove any existing binding for this session — it's poisoned by the error.
+          // Don't use exit code alone: CLI might exit 0 after handling errors gracefully,
+          // or non-zero from SIGTERM (when we kill a previous session for the same user).
+          if (sessionMap.has(sessionId)) {
+            sessionMap.delete(sessionId)
+            persistSessionMap()
+            log(chalk.yellow(`[session] Cleared binding for ${sessionId} (apiError, code=${code})`))
+          } else {
+            log(chalk.yellow(`[session] Skipped binding for ${sessionId} (apiError, code=${code})`))
+          }
+        } else {
+          sessionMap.set(sessionId, resultSessionId)
+          persistSessionMap()
+          log(chalk.dim(`Session mapped: ${sessionId} → ${resultSessionId}`))
+        }
       }
 
       if (fullText) {
