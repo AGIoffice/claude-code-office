@@ -37,6 +37,13 @@ const TOOL_NAME_MAP = {
   execute_command: 'Bash', read_file: 'Read', write_file: 'Write', edit_file: 'Edit',
   search: 'Grep', run_command: 'Bash', code_edit: 'FileEdit', code_search: 'Grep',
   terminal: 'Bash', file_operation: 'FileEdit',
+  // Claude server-side tools (content_block type → display name)
+  server_tool_use: 'ServerTool', web_search_tool_result: 'WebSearch',
+  web_fetch_tool_result: 'WebFetch', code_execution_tool_result: 'CodeExecution',
+  mcp_tool_use: 'Mcp', mcp_tool_result: 'Mcp',
+  bash_code_execution_tool_result: 'Bash',
+  text_editor_code_execution_tool_result: 'Edit',
+  tool_search_tool_result: 'ToolSearch', container_upload: 'Upload',
   // General aliases
   bash: 'Bash', grep: 'Grep', glob: 'Glob', ls: 'LS',
 }
@@ -266,7 +273,9 @@ const sessionMap = new Map()
 // Load persisted sessions from previous clock-in (if any)
 try {
   const raw = require('fs').readFileSync(SESSION_MAP_FILE, 'utf-8')
-  const entries = JSON.parse(raw)
+  const parsed = JSON.parse(raw)
+  // Support both formats: Array of entries [[k,v], ...] and Object {k: v}
+  const entries = Array.isArray(parsed) ? parsed : Object.entries(parsed)
   for (const [k, v] of entries) sessionMap.set(k, v)
   log(chalk.dim(`Restored ${sessionMap.size} session mapping(s) from previous clock-in`))
 } catch { /* no file or invalid — start fresh */ }
@@ -548,6 +557,9 @@ async function handleMessage(message) {
     const claudeSessionId = sessionId ? sessionMap.get(sessionId) : null
     if (claudeSessionId && providerConfig.resumeFlag) {
       args.push(providerConfig.resumeFlag, claudeSessionId)
+      log(chalk.green(`[session] Resuming: ${sessionId} → ${claudeSessionId}`))
+    } else if (sessionId) {
+      log(chalk.yellow(`[session] No resume binding for ${sessionId} (map size: ${sessionMap.size})`))
     }
     // System prompt + platform context injection.
     // shell: false — no escaping needed, args passed directly.
@@ -744,6 +756,11 @@ async function handleMessage(message) {
           return
         }
 
+        // Citations delta — ignore silently (citations are embedded in final text)
+        if (streamEvent?.type === 'content_block_delta' && streamEvent?.delta?.type === 'citations_delta') {
+          return
+        }
+
         // Thinking deltas
         if (streamEvent?.type === 'content_block_delta' && streamEvent?.delta?.type === 'thinking_delta') {
           const deltaText = streamEvent.delta.thinking || streamEvent.delta.text || ''
@@ -798,19 +815,42 @@ async function handleMessage(message) {
             return
           }
 
-          if (block?.type === 'tool_use') {
-            const toolUseId = block.id || `tool-${now}-${Math.random().toString(36).slice(2, 8)}`
+          // All tool-like block types: tool_use (client), server_tool_use (Anthropic server),
+          // mcp_tool_use, and result blocks that appear as content_block_start in stream-json.
+          // The original Claude CLI sets "tool-input" spinner state for all of these.
+          const TOOL_BLOCK_TYPES = new Set([
+            'tool_use', 'server_tool_use', 'mcp_tool_use',
+            'web_search_tool_result', 'web_fetch_tool_result',
+            'code_execution_tool_result', 'bash_code_execution_tool_result',
+            'text_editor_code_execution_tool_result', 'tool_search_tool_result',
+            'mcp_tool_result', 'container_upload',
+          ])
+          if (TOOL_BLOCK_TYPES.has(block?.type)) {
+            // For server_tool_use, the tool name is in block.name (e.g. "web_search")
+            // For result blocks, derive name from block type itself
+            const rawName = block.name || block.type
+            const toolUseId = block.id || block.tool_use_id || `tool-${now}-${Math.random().toString(36).slice(2, 8)}`
             if (blockIndex !== null) {
               activeToolsByIndex.set(blockIndex, {
                 toolUseId,
-                toolName: block.name || 'tool',
-                input: block.input,
+                toolName: rawName,
+                input: block.input || {},
               })
             }
             emitToolStart({
               toolUseId,
-              toolName: block.name || 'tool',
-              input: block.input,
+              toolName: rawName,
+              input: block.input || {},
+              timestamp: now,
+            })
+          }
+
+          // Compaction events — notify frontend that context is being compressed
+          if (block?.type === 'compaction') {
+            emitToolStart({
+              toolUseId: block.id || `compaction-${now}`,
+              toolName: 'Compaction',
+              input: {},
               timestamp: now,
             })
           }
@@ -875,10 +915,11 @@ async function handleMessage(message) {
             if (block.type === 'text' && block.text) {
               if (!fullText) fullText = block.text
             }
-            // Extract complete tool_use input — the assistant message contains the
+            // Extract complete tool input — the assistant message contains the
             // fully accumulated input (unlike content_block_start which has {}).
-            // This allows us to retroactively update tool events with real input data.
-            if (block.type === 'tool_use' && block.id && block.input) {
+            // This applies to tool_use, server_tool_use, and mcp_tool_use blocks.
+            const isToolBlock = block.type === 'tool_use' || block.type === 'server_tool_use' || block.type === 'mcp_tool_use'
+            if (isToolBlock && block.id && block.input) {
               const existing = activeToolsById.get(block.id)
               if (existing && (!existing.input || Object.keys(existing.input).length === 0)) {
                 existing.input = block.input
@@ -928,6 +969,39 @@ async function handleMessage(message) {
               timestamp: now,
               force: true,
             })
+          }
+          return
+        }
+
+        // System events — forward plan mode, hooks, and other system subtypes
+        // These are top-level events (not wrapped in stream_event) that the CLI
+        // emits in --verbose stream-json mode for UI state changes.
+        if (event.type === 'system') {
+          const subtype = event.subtype
+          // Plan mode transitions — let frontend know agent entered/exited planning
+          if (subtype === 'plan_mode' || subtype === 'plan_mode_exit' || subtype === 'plan_mode_reentry') {
+            sendJSON({ type: 'system_event', sessionId, commandId, event: { subtype, timestamp: now } })
+            return
+          }
+          // Hook lifecycle — show user that hooks are running
+          if (subtype === 'hook_started' || subtype === 'hook_progress' || subtype === 'hook_response') {
+            sendJSON({ type: 'system_event', sessionId, commandId, event: { subtype, hookName: event.hook_name, timestamp: now } })
+            return
+          }
+          // Task/agent notifications (subagent spawned, progress, etc.)
+          if (subtype === 'task_notification' || subtype === 'task_progress') {
+            sendJSON({ type: 'system_event', sessionId, commandId, event: { subtype, message: event.message, timestamp: now } })
+            return
+          }
+          // MCP progress
+          if (subtype === 'mcp_message' || subtype === 'mcp_progress') {
+            sendJSON({ type: 'system_event', sessionId, commandId, event: { subtype, message: event.message, timestamp: now } })
+            return
+          }
+          // Context compaction boundaries
+          if (subtype === 'compact_boundary' || subtype === 'microcompact_boundary') {
+            sendJSON({ type: 'system_event', sessionId, commandId, event: { subtype, timestamp: now } })
+            return
           }
           return
         }
