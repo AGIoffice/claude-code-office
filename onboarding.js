@@ -125,38 +125,67 @@ export async function checkForUpdate() {
   }
 }
 
+// ── Adam Sprite Art (auto-generated from pixel art sprite sheet) ──────────
+// Half-block rendering: 2x2 pixels → 1 char, truecolor ANSI
+import { ADAM_IDLE_FRAMES, ADAM_SIT_FRAME, ADAM_FRAMES } from './adam-frames.js'
+
 // ── Banner ────────────────────────────────────────────────────────────────
 
 export function printBanner(subtitle = 'Manage Your AI Agents') {
+  const frame = ADAM_IDLE_FRAMES[0]
+
+  // Text lines aligned to Adam sprite rows (~23 rows)
+  // Adam is ~32 chars wide; text appears to the right with padding
+  const textLines = [
+    '',
+    '',
+    '',
+    '',
+    '',
+    '',
+    '',
+    '',
+    chalk.bold.white('  Virtual Office'),
+    chalk.dim(`  ${subtitle}`),
+    '',
+    chalk.dim('  office.xyz'),
+  ]
+
   console.log('')
-  console.log(chalk.cyan('  ┌─────────────────────────────────────────┐'))
-  console.log(chalk.cyan('  │') + '                                         ' + chalk.cyan('│'))
-  console.log(chalk.cyan('  │') + chalk.bold.white('   ▓▓▓') + '                                   ' + chalk.cyan('│'))
-  console.log(chalk.cyan('  │') + chalk.bold.white('  ▓░░▓') + chalk.bold.white('   Virtual Office') + '                  ' + chalk.cyan('│'))
-  console.log(chalk.cyan('  │') + chalk.bold.white('  ▓▓▓▓') + chalk.dim(`   ${subtitle}`) + '           ' + chalk.cyan('│'))
-  console.log(chalk.cyan('  │') + chalk.bold.white('   ██') + '                                    ' + chalk.cyan('│'))
-  console.log(chalk.cyan('  │') + chalk.dim('  ▓▓▓▓   office.xyz') + '                      ' + chalk.cyan('│'))
-  console.log(chalk.cyan('  │') + '                                         ' + chalk.cyan('│'))
-  console.log(chalk.cyan('  └─────────────────────────────────────────┘'))
+  for (let i = 0; i < frame.length; i++) {
+    console.log('  ' + frame[i] + (textLines[i] || ''))
+  }
   console.log('')
 }
 
 export function printClockInBanner({ agentHandle, model, seat, workspace }) {
+  const frame = ADAM_SIT_FRAME
+
+  // Right-side info lines aligned to Adam's sitting sprite (~23 rows)
+  const infoLines = [
+    '',
+    '',
+    '',
+    '',
+    '',
+    chalk.green.bold('  ✓ Clocked in to Virtual Office'),
+    '',
+    chalk.dim('  Agent:  ') + chalk.bold.white(agentHandle),
+    chalk.dim('  Model:  ') + chalk.white(model || 'Claude Opus 4.6'),
+    seat ? (chalk.dim('  Seat:   ') + chalk.white(seat)) : '',
+    chalk.dim('  Dir:    ') + chalk.white(workspace || process.cwd()),
+    '',
+    chalk.dim('  Web:    ') + chalk.underline.cyan('https://beta.office.xyz'),
+    '',
+    chalk.dim('  Press ') + chalk.yellow('Ctrl+C') + chalk.dim(' to clock out'),
+  ]
+
   console.log('')
-  console.log(chalk.cyan('  ┌─────────────────────────────────────────┐'))
-  console.log(chalk.cyan('  │') + chalk.green.bold('  ✓ Clocked in to Virtual Office') + '         ' + chalk.cyan('│'))
-  console.log(chalk.cyan('  │') + '                                         ' + chalk.cyan('│'))
-  console.log(chalk.cyan('  │') + chalk.dim('  Agent:     ') + chalk.bold.white(agentHandle))
-  console.log(chalk.cyan('  │') + chalk.dim('  Model:     ') + chalk.white(model || 'Claude Opus 4.6'))
-  if (seat) {
-    console.log(chalk.cyan('  │') + chalk.dim('  Seat:      ') + chalk.white(seat))
+  for (let i = 0; i < Math.max(frame.length, infoLines.length); i++) {
+    const sprite = (i < frame.length) ? frame[i] : ''
+    const info = (i < infoLines.length) ? infoLines[i] : ''
+    console.log('  ' + sprite + info)
   }
-  console.log(chalk.cyan('  │') + chalk.dim('  Workspace: ') + chalk.white(workspace || process.cwd()))
-  console.log(chalk.cyan('  │') + '                                         ' + chalk.cyan('│'))
-  console.log(chalk.cyan('  │') + chalk.dim('  Web UI:    ') + chalk.underline.cyan('https://beta.office.xyz'))
-  console.log(chalk.cyan('  │') + '                                         ' + chalk.cyan('│'))
-  console.log(chalk.cyan('  │') + chalk.yellow('  Press Ctrl+C to clock out') + '              ' + chalk.cyan('│'))
-  console.log(chalk.cyan('  └─────────────────────────────────────────┘'))
   console.log('')
 }
 
@@ -510,19 +539,54 @@ export async function runOnboarding() {
   // 1. Check cached session
   const cached = loadSession()
 
-  if (cached?.sessionToken && cached?.lastAgent?.handle && cached?.lastAgent?.connectionToken) {
-    // Quick reconnect path
+  if (cached?.sessionToken && cached?.lastAgent?.handle) {
+    // Quick reconnect path — always refresh token to avoid stale token rejection
     const spinner = ora('Validating session...').start()
     try {
       const validation = await api('GET', '/api/cli/auth/session', null, cached.sessionToken)
       if (validation.success) {
+        spinner.text = 'Refreshing connection...'
+
+        // Re-hire with same agent name to get a fresh connectionToken.
+        // This is idempotent — if agent exists, it just refreshes the token.
+        const agentName = cached.lastAgent.handle.split('.')[0]
+        const officeId = cached.lastOfficeId || null
+
+        let freshToken = cached.lastAgent.connectionToken
+        let seat = cached.lastAgent.seat
+
+        if (agentName && officeId) {
+          try {
+            const result = await api('POST', '/api/cli/office/hire', {
+              officeId,
+              agentName,
+              provider: 'claude-code',
+            }, cached.sessionToken)
+            freshToken = result.connectionToken || freshToken
+            seat = result.seat || seat
+
+            // Update cached session with fresh token
+            saveSession({
+              ...cached,
+              lastAgent: {
+                ...cached.lastAgent,
+                connectionToken: freshToken,
+                seat,
+              },
+            })
+          } catch (err) {
+            // If refresh fails, try with cached token anyway
+            console.log(chalk.dim(`  Token refresh failed (${err.message}), using cached token`))
+          }
+        }
+
         spinner.succeed(`Welcome back, ${chalk.bold(cached.email || cached.displayName || 'user')}!`)
         console.log(chalk.dim(`  Reconnecting as ${cached.lastAgent.handle}...`))
         console.log(chalk.dim(`  Web interface: ${chalk.underline.cyan('https://beta.office.xyz')}`))
         return {
           agent: cached.lastAgent.handle,
-          token: cached.lastAgent.connectionToken,
-          seat: cached.lastAgent.seat,
+          token: freshToken,
+          seat,
         }
       }
     } catch {
@@ -548,6 +612,7 @@ export async function runOnboarding() {
     sessionToken: session.sessionToken,
     expiresAt: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString(),
     lastOffice: domain,
+    lastOfficeId: officeId,
     lastAgent: {
       handle: hired.agentHandle,
       connectionToken: hired.connectionToken,

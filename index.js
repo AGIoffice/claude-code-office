@@ -257,16 +257,26 @@ const model = argv.model || providerConfig.defaultModel
 
 // ── Session tracking ───────────────────────────────────────────────────────
 // Map VO sessionId → Claude session_id for conversation continuity.
-// Cleared on clock-in to avoid stale sessions that ignore --append-system-prompt.
+// Persisted to disk so sessions survive clock-out / clock-in cycles.
+// --resume and --append-system-prompt coexist fine, so resumed sessions
+// still pick up fresh system prompts and MCP tools (registered globally).
 const SESSION_MAP_FILE = path.join(os.tmpdir(), `vo-sessions-${(argv.agent || 'pending').replace(/\./g, '-')}.json`)
 const sessionMap = new Map()
 
-// Clear stale sessions on startup — stale sessions from previous clock-ins
-// ignore new --append-system-prompt and MCP tools.
+// Load persisted sessions from previous clock-in (if any)
 try {
-  require('fs').unlinkSync(SESSION_MAP_FILE)
-  // Will be re-created when first session is mapped
-} catch { /* no file to delete */ }
+  const raw = require('fs').readFileSync(SESSION_MAP_FILE, 'utf-8')
+  const entries = JSON.parse(raw)
+  for (const [k, v] of entries) sessionMap.set(k, v)
+  log(chalk.dim(`Restored ${sessionMap.size} session mapping(s) from previous clock-in`))
+} catch { /* no file or invalid — start fresh */ }
+
+/** Persist session map to disk (fire-and-forget) */
+function persistSessionMap() {
+  try {
+    require('fs').writeFileSync(SESSION_MAP_FILE, JSON.stringify([...sessionMap]), 'utf-8')
+  } catch { /* best-effort */ }
+}
 
 // Track active command processes PER SESSION for concurrent conversation support.
 // Key: sessionId, Value: { child, commandId }. Different clients (web, Telegram)
@@ -516,7 +526,7 @@ async function handleMessage(message) {
     // Kill previous command for THIS SESSION only. Other sessions continue in parallel.
     const prev = sessionId ? activeChildren.get(sessionId) : null
     if (prev?.child) {
-      log(chalk.dim(`[${sessionLabel}] Killing previous command for same session`))
+      log(chalk.dim(`[${sessionId}] Killing previous command for same session`))
       sendJSON({
         type: 'streaming.aborted',
         sessionId,
@@ -947,6 +957,7 @@ async function handleMessage(message) {
       // Store Claude session_id for conversation continuity
       if (resultSessionId && sessionId) {
         sessionMap.set(sessionId, resultSessionId)
+        persistSessionMap()
         log(chalk.dim(`Session mapped: ${sessionId} → ${resultSessionId}`))
       }
 
@@ -1132,18 +1143,14 @@ function connect() {
       if (mcpRegistered) mcpConfigPath = 'registered'  // flag to skip re-registration
     }
 
-    // Banner
-    console.log('')
-    console.log(chalk.bold.cyan('  ╔══════════════════════════════════════╗'))
-    console.log(chalk.bold.cyan('  ║  Clocked in to Virtual Office       ║'))
-    console.log(chalk.bold.cyan('  ╚══════════════════════════════════════╝'))
-    console.log(chalk.dim(`  Agent:    ${argv.agent}`))
-    console.log(chalk.dim(`  Provider: ${argv.provider}`))
-    console.log(chalk.dim(`  Workspace: ${workspace}`))
-    console.log(chalk.dim(`  Identity: ${cachedSystemPrompt ? 'loaded' : 'default'}`))
-    console.log(chalk.dim(`  Tools:    ${mcpRegistered ? 'VO MCP registered ✓' : 'basic only'}`))
-    console.log(chalk.dim(`  Press Ctrl+C to clock out`))
-    console.log('')
+    // Banner — use the printClockInBanner from onboarding for consistent look
+    const { printClockInBanner: printBanner } = await import('./onboarding.js')
+    printBanner({
+      agentHandle: argv.agent,
+      model: argv.provider,
+      seat: null,
+      workspace,
+    })
   })
 
   ws.on('message', (data) => {
