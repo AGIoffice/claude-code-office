@@ -264,10 +264,14 @@ const model = argv.model || providerConfig.defaultModel
 
 // ── Session tracking ───────────────────────────────────────────────────────
 // Map VO sessionId → Claude session_id for conversation continuity.
-// Persisted to disk so sessions survive clock-out / clock-in cycles.
+// Persisted to ~/.claude/ (not tmpdir) so sessions survive reboots.
+// macOS cleans up os.tmpdir() (/var/folders/.../T/) on reboot, which caused
+// session bindings to disappear after restart. ~/.claude/ is where Claude
+// itself stores session data, so it's stable across reboots and clock-ins.
 // --resume and --append-system-prompt coexist fine, so resumed sessions
 // still pick up fresh system prompts and MCP tools (registered globally).
-const SESSION_MAP_FILE = path.join(os.tmpdir(), `vo-sessions-${(argv.agent || 'pending').replace(/\./g, '-')}.json`)
+const SESSION_MAP_DIR = path.join(os.homedir(), '.claude')
+const SESSION_MAP_FILE = path.join(SESSION_MAP_DIR, `vo-sessions-${(argv.agent || 'pending').replace(/\./g, '-')}.json`)
 const sessionMap = new Map()
 
 // Load persisted sessions from previous clock-in (if any)
@@ -283,6 +287,7 @@ try {
 /** Persist session map to disk (fire-and-forget) */
 function persistSessionMap() {
   try {
+    require('fs').mkdirSync(SESSION_MAP_DIR, { recursive: true })
     require('fs').writeFileSync(SESSION_MAP_FILE, JSON.stringify([...sessionMap]), 'utf-8')
   } catch { /* best-effort */ }
 }
@@ -555,6 +560,7 @@ async function handleMessage(message) {
     }
     // Resume conversation if we have a Claude session_id for this VO session
     const claudeSessionId = sessionId ? sessionMap.get(sessionId) : null
+    const attemptedResume = !!(claudeSessionId && providerConfig.resumeFlag)
     if (claudeSessionId && providerConfig.resumeFlag) {
       args.push(providerConfig.resumeFlag, claudeSessionId)
       log(chalk.green(`[session] Resuming: ${sessionId} → ${claudeSessionId}`))
@@ -584,6 +590,12 @@ async function handleMessage(message) {
     // See: https://code.claude.com/docs/en/mcp
     // User message as last positional argument (raw, no escaping needed with shell: false)
     args.push(text)
+    // Pre-build args without --resume for use in retry (remove resumeFlag + its value).
+    // If resume fails (expired session → exit code 1), we retry with these args.
+    const argsWithoutResume = attemptedResume
+      ? args.filter((a, i, arr) => a !== providerConfig.resumeFlag && arr[i - 1] !== providerConfig.resumeFlag)
+      : null
+    let sessionRetried = false
 
     log(chalk.blue(`Running: ${cmd} ${args.slice(0, 5).join(' ')}... [${args.length} args]`))
     if (process.env.ANTHROPIC_API_KEY) {
@@ -714,7 +726,7 @@ async function handleMessage(message) {
       activeToolsById.delete(toolUseId)
     }
 
-    rl.on('line', (line) => {
+    const lineHandler = (line) => {
       if (!line.trim()) return
       try {
         const event = JSON.parse(line)
@@ -1017,10 +1029,11 @@ async function handleMessage(message) {
       } catch {
         // Not JSON or unrecognized format — ignore
       }
-    })
+    }
+    rl.on('line', lineHandler)
 
     // stderr → log
-    child.stderr.on('data', (chunk) => {
+    const stderrHandler = (chunk) => {
       const text = chunk.toString()
       if (text.trim()) {
         log(chalk.dim(`[stderr] ${text.trim().slice(0, 200)}`))
@@ -1029,16 +1042,51 @@ async function handleMessage(message) {
           isApiError = true
         }
       }
-    })
+    }
+    child.stderr.on('data', stderrHandler)
 
     // 4. On process exit, send completion events
-    child.on('close', (code) => {
+    const closeHandler = (code) => {
       clearInterval(heartbeatTimer) // Stop heartbeat — task is done
       if (sessionId && activeChildren.get(sessionId)?.child === child) activeChildren.delete(sessionId)
 
       // Clean up system prompt temp file
       if (systemPromptTmpFile) {
         try { require('fs').unlinkSync(systemPromptTmpFile) } catch { /* ignore */ }
+      }
+
+      // SESSION RETRY: If --resume failed (exit code 1, no response produced), clear the
+      // stale binding and retry without --resume so the user gets a fresh session.
+      // This happens when a session expires on Anthropic's side (Claude's ~/.claude/ entries
+      // don't live forever) or when the session data is from a different machine/workspace.
+      if (code !== 0 && attemptedResume && !sessionRetried && !fullText) {
+        sessionRetried = true
+        sessionMap.delete(sessionId)
+        persistSessionMap()
+        log(chalk.yellow(`[session-retry] --resume failed (exit=${code}), cleared stale binding, retrying without --resume`))
+        // Reset streaming state for fresh attempt
+        fullText = ''
+        resultSessionId = null
+        isApiError = false
+        activeToolsByIndex.clear()
+        activeToolsById.clear()
+        finalizedToolIds.clear()
+        completedToolActions.length = 0
+        activeThinkingByIndex.clear()
+        completedThinkingBlocks.length = 0
+        // Spawn fresh without --resume
+        const childEnvRetry = { ...process.env }
+        delete childEnvRetry.ANTHROPIC_API_KEY
+        child = spawn(cmd, argsWithoutResume, { cwd: workspace, env: childEnvRetry, stdio: ['ignore', 'pipe', 'pipe'], shell: false })
+        if (sessionId) activeChildren.set(sessionId, { child, commandId })
+        log(chalk.blue(`[session-retry] Re-running: ${cmd} ${argsWithoutResume.slice(0, 5).join(' ')}... [${argsWithoutResume.length} args]`))
+        // Rewire NDJSON parser + handlers onto the new child
+        const rlRetry = createInterface({ input: child.stdout })
+        rlRetry.on('line', lineHandler)
+        child.stderr.on('data', stderrHandler)
+        child.on('close', closeHandler)
+        child.on('error', errorHandler)
+        return
       }
 
       // Store Claude session_id for conversation continuity.
@@ -1149,9 +1197,10 @@ async function handleMessage(message) {
         })
         log(chalk.yellow(`Result metadata fallback used: ${err.message}`))
       }
-    })
+    }
+    child.on('close', closeHandler)
 
-    child.on('error', (err) => {
+    const errorHandler = (err) => {
       clearInterval(heartbeatTimer) // Stop heartbeat on error
       log(chalk.red(`CLI process error: ${err.message}`))
       if (err.code === 'ENOENT') {
@@ -1169,7 +1218,8 @@ async function handleMessage(message) {
           thinkingBlocks: completedThinkingBlocks.length > 0 ? completedThinkingBlocks : undefined,
         },
       })
-    })
+    }
+    child.on('error', errorHandler)
 
     return
   }
