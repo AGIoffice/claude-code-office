@@ -109,6 +109,12 @@ const argv = yargs(hideBin(process.argv))
     type: 'string',
     describe: 'Only show messages from this channel (web, telegram, slack, discord, office, feishu, wechat)',
   })
+  .option('verbose', {
+    alias: 'v',
+    type: 'boolean',
+    describe: 'Show debug logs with timestamps',
+    default: false,
+  })
   .example('$0', 'Interactive setup (login, create office, name agent)')
   .example('$0 --agent claude.my.office.xyz --token xxx', 'Direct connect (skip login)')
   .help()
@@ -179,6 +185,7 @@ function shellEscapeArg(s) {
 
 let label = argv.agent ? (argv.agent.split('.')[0] || argv.agent) : 'local-host'
 function log(...args) {
+  if (!argv.verbose) return
   console.log(chalk.dim(`[${new Date().toISOString()}][${label}]`), ...args)
 }
 
@@ -256,6 +263,9 @@ if (argv.agent) {
 
 let wsRef = null
 let reconnectAttempts = 0
+let tokenRetryAttempted = false  // Track whether we've already retried a 1008 rejection
+let onboardingSeat = null        // Seat assigned during onboarding, passed to clock-in banner
+let hasShownClockInBanner = false // Prevent duplicate banners
 const MAX_RECONNECT_DELAY_MS = 30_000
 let registryHeartbeatTimer = null
 const REGISTRY_HEARTBEAT_INTERVAL_MS = 30_000  // Report liveness to Registry every 30s
@@ -307,6 +317,8 @@ const sessionHistorySynced = new Set()
 
 /**
  * Parse a VO sessionId (agentId--userId--conversationId) into parts.
+ * NOTE: agentId and userId are sanitized (dots→dashes) by buildSessionId().
+ * Use metadata.agentHandle / metadata.userId for original values.
  */
 function parseSessionId(sessionId) {
   const parts = (sessionId || '').split('--')
@@ -317,59 +329,123 @@ function parseSessionId(sessionId) {
   }
 }
 
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+function isUUID(s) { return typeof s === 'string' && UUID_RE.test(s) }
+
 /**
  * Fetch conversation history from Chat Bridge for a given session.
  * Returns a formatted string suitable for --append-system-prompt injection.
  * Returns empty string if no history or fetch fails.
+ *
+ * Two-tier strategy:
+ *  1. Primary: conversationId (UUID) → GET /api/conversations/{id}/messages
+ *  2. Fallback: agentHandle + userId → GET /api/agents/{id}/conversations → latest → messages
+ *
+ * @param {string} sessionId - VO sessionId (sanitized)
+ * @param {object} metadata - Original unsanitized values from message metadata
+ * @param {string} [metadata.agentHandle] - Original FQDN (e.g. "claude.aladdin.office.xyz")
+ * @param {string} [metadata.userId] - Original userId (e.g. "telegram:2082362824")
+ * @param {string} [metadata.conversationId] - Original conversationId (UUID)
  */
-async function fetchHistoryForPrompt(sessionId) {
+async function fetchHistoryForPrompt(sessionId, metadata = {}) {
   if (!sessionId) return ''
   // Only fetch once per session to avoid repeated slow requests
   if (sessionHistorySynced.has(sessionId)) return ''
   sessionHistorySynced.add(sessionId)
-
-  const { agentId, userId, conversationId } = parseSessionId(sessionId)
-  if (!agentId || !userId) return ''
 
   const chatBridgeUrl =
     process.env.CHAT_BRIDGE_HTTP_URL ||
     process.env.CHAT_BRIDGE_URL ||
     'https://chatbridge.aladdinagi.xyz'
 
-  const params = new URLSearchParams({ userId })
-  if (conversationId) params.set('conversationId', conversationId)
-  const url = `${chatBridgeUrl}/api/${encodeURIComponent(agentId)}/conversations?${params.toString()}`
+  // Resolve conversationId: prefer metadata (original), fall back to sessionId parse
+  const parsed = parseSessionId(sessionId)
+  const conversationId = metadata.conversationId || (isUUID(parsed.conversationId) ? parsed.conversationId : null)
 
-  try {
-    log(chalk.gray(`[history-sync] Fetching history from Chat Bridge for resume fallback...`))
-    const response = await fetch(url, {
-      headers: { Accept: 'application/json' },
-      signal: AbortSignal.timeout(5000),
-    })
-    if (!response.ok) return ''
-
-    const data = await response.json()
-    const historyArray = Array.isArray(data.messages) ? data.messages
-      : Array.isArray(data.history) ? data.history : []
-
-    if (historyArray.length === 0) return ''
-
-    // Convert to readable conversation format for system prompt injection
-    const turns = historyArray
-      .filter(msg => msg.content && ['user', 'assistant'].includes(msg.role))
-      .slice(-40) // Keep last 40 turns to avoid token overflow
-      .map(msg => `${msg.role === 'user' ? 'Human' : 'Assistant'}: ${
-        typeof msg.content === 'string' ? msg.content.slice(0, 2000) : '[complex content]'
-      }`)
-
-    if (turns.length === 0) return ''
-
-    log(chalk.green(`[history-sync] Loaded ${turns.length} turns from Chat Bridge for context injection`))
-    return `\n\n## Previous Conversation Context\nThe following is the recent conversation history from this session. Continue naturally from where we left off.\n\n${turns.join('\n\n')}`
-  } catch (error) {
-    log(chalk.yellow(`[history-sync] Failed to fetch history: ${error?.message || error}`))
-    return ''
+  // ── Primary path: fetch messages directly by conversationId ──────────────
+  if (conversationId) {
+    try {
+      const url = `${chatBridgeUrl}/api/conversations/${encodeURIComponent(conversationId)}/messages?limit=80`
+      log(chalk.gray(`[history-sync] Fetching messages for conversation ${conversationId.slice(0, 8)}...`))
+      const response = await fetch(url, {
+        headers: { Accept: 'application/json' },
+        signal: AbortSignal.timeout(5000),
+      })
+      if (response.ok) {
+        const data = await response.json()
+        const messages = Array.isArray(data.messages) ? data.messages : []
+        const result = formatHistoryForPrompt(messages)
+        if (result) {
+          log(chalk.green(`[history-sync] Loaded ${messages.length} messages from conversation ${conversationId.slice(0, 8)}`))
+          return result
+        }
+      } else if (response.status === 404) {
+        log(chalk.gray(`[history-sync] Conversation ${conversationId.slice(0, 8)} not in DB yet (new conversation)`))
+      }
+    } catch (error) {
+      log(chalk.yellow(`[history-sync] Primary fetch failed: ${error?.message || error}`))
+    }
   }
+
+  // ── Fallback: list conversations for agent+user, then fetch latest ──────
+  const agentHandle = metadata.agentHandle || argv.agent
+  const userId = metadata.userId
+  if (agentHandle && userId) {
+    try {
+      const listParams = new URLSearchParams({ userId, limit: '1' })
+      const listUrl = `${chatBridgeUrl}/api/agents/${encodeURIComponent(agentHandle)}/conversations?${listParams}`
+      log(chalk.gray(`[history-sync] Falling back to conversation list for ${agentHandle}/${userId.slice(0, 20)}...`))
+      const listResponse = await fetch(listUrl, {
+        headers: { Accept: 'application/json' },
+        signal: AbortSignal.timeout(5000),
+      })
+      if (listResponse.ok) {
+        const listData = await listResponse.json()
+        const conversations = Array.isArray(listData.conversations) ? listData.conversations : []
+        if (conversations.length > 0 && conversations[0].id) {
+          const latestConvId = conversations[0].id
+          const msgUrl = `${chatBridgeUrl}/api/conversations/${encodeURIComponent(latestConvId)}/messages?limit=80`
+          const msgResponse = await fetch(msgUrl, {
+            headers: { Accept: 'application/json' },
+            signal: AbortSignal.timeout(5000),
+          })
+          if (msgResponse.ok) {
+            const msgData = await msgResponse.json()
+            const messages = Array.isArray(msgData.messages) ? msgData.messages : []
+            const result = formatHistoryForPrompt(messages)
+            if (result) {
+              log(chalk.green(`[history-sync] Loaded ${messages.length} messages via fallback (conv ${latestConvId.slice(0, 8)})`))
+              return result
+            }
+          }
+        }
+      }
+    } catch (error) {
+      log(chalk.yellow(`[history-sync] Fallback fetch failed: ${error?.message || error}`))
+    }
+  }
+
+  log(chalk.gray(`[history-sync] No history available for session ${sessionId.slice(0, 30)}`))
+  return ''
+}
+
+/**
+ * Convert an array of message objects into a formatted string for system prompt injection.
+ * Returns empty string if no valid turns found.
+ */
+function formatHistoryForPrompt(messages) {
+  if (!Array.isArray(messages) || messages.length === 0) return ''
+
+  const turns = messages
+    .filter(msg => msg.content && ['user', 'assistant'].includes(msg.role))
+    .slice(-40) // Keep last 40 turns to avoid token overflow
+    .map(msg => `${msg.role === 'user' ? 'Human' : 'Assistant'}: ${
+      typeof msg.content === 'string' ? msg.content.slice(0, 2000) : '[complex content]'
+    }`)
+
+  if (turns.length === 0) return ''
+
+  return `\n\n## Previous Conversation Context\nThe following is the recent conversation history from this session. Continue naturally from where we left off.\n\n${turns.join('\n\n')}`
 }
 
 // ── System Prompt & MCP (First-Class Citizen) ──────────────────────────────
@@ -712,7 +788,11 @@ async function handleMessage(message) {
     // Pre-fetch here so it's available for both initial run and retry path.
     let historyContext = ''
     if (!attemptedResume && sessionId) {
-      historyContext = await fetchHistoryForPrompt(sessionId)
+      historyContext = await fetchHistoryForPrompt(sessionId, {
+        agentHandle: argv.agent || message.metadata?.agentHandle,
+        userId: message.metadata?.userId,
+        conversationId: message.metadata?.conversationId,
+      })
       if (historyContext) {
         log(chalk.green(`[history-sync] Fetched conversation history for context injection`))
       }
@@ -1252,7 +1332,11 @@ async function handleMessage(message) {
         let retryArgs = argsWithoutResume
         if (sessionId) {
           try {
-            const retryHistory = await fetchHistoryForPrompt(sessionId)
+            const retryHistory = await fetchHistoryForPrompt(sessionId, {
+              agentHandle: argv.agent || message.metadata?.agentHandle,
+              userId: message.metadata?.userId,
+              conversationId: message.metadata?.conversationId,
+            })
             if (retryHistory) {
               // Rebuild args: replace --append-system-prompt value with history-enriched version
               const retryPrompt = (cachedSystemPrompt || '') + retryHistory
@@ -1438,6 +1522,68 @@ async function handleMessage(message) {
   log(chalk.gray(`Ignoring message type: ${type}`))
 }
 
+// ── Token refresh on 1008 rejection ───────────────────────────────────────
+// When the server rejects our token (code 1008), try to re-hire via the
+// Chat Bridge CLI auth API to get a fresh connectionToken, update the WS
+// URL, and reconnect — all without requiring the user to restart the CLI.
+
+async function refreshTokenAndReconnect() {
+  const { loadSession } = await import('./onboarding.js')
+  const cached = loadSession()
+  if (!cached?.sessionToken || !cached?.lastAgent?.handle || !cached?.lastOfficeId) {
+    throw new Error('No cached session — cannot auto-refresh token')
+  }
+
+  const agentName = cached.lastAgent.handle.split('.')[0]
+  const officeId = cached.lastOfficeId
+  const chatBridgeBase = process.env.CHAT_BRIDGE_HTTP_URL ||
+    process.env.CHAT_BRIDGE_URL ||
+    process.env.CHAT_BRIDGE_BASE_URL ||
+    'https://chatbridge.aladdinagi.xyz'
+
+  const res = await fetch(`${chatBridgeBase}/api/cli/office/hire`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'x-cli-session': cached.sessionToken,
+    },
+    body: JSON.stringify({ officeId, agentName, provider: 'claude-code' }),
+    signal: AbortSignal.timeout(10000),
+  })
+
+  if (!res.ok) {
+    const text = await res.text().catch(() => '')
+    throw new Error(`hire returned ${res.status}: ${text}`)
+  }
+
+  const data = await res.json()
+  if (!data.connectionToken) {
+    throw new Error('Server returned no connectionToken')
+  }
+
+  // Update WS URL with fresh token
+  argv.token = data.connectionToken
+  managerUrl.searchParams.set('token', data.connectionToken)
+
+  // Persist fresh token to session cache
+  const { saveSession } = await import('./onboarding.js')
+  saveSession({
+    ...cached,
+    lastAgent: {
+      ...cached.lastAgent,
+      connectionToken: data.connectionToken,
+      seat: data.seat || cached.lastAgent.seat,
+    },
+  })
+
+  log(chalk.green('Token refreshed successfully, reconnecting...'))
+
+  // Small delay to let Registry propagate the new token
+  await new Promise(resolve => setTimeout(resolve, 1000))
+
+  connect()
+}
+
 // ── WebSocket connection with reconnect ────────────────────────────────────
 
 function connect() {
@@ -1459,6 +1605,7 @@ function connect() {
   ws.on('open', async () => {
     log(chalk.green('Connected to Virtual Office'))
     reconnectAttempts = 0
+    tokenRetryAttempted = false  // Reset so future disconnects can retry
     isAlive = true
 
     // Heartbeat: ping + pong timeout detection (matches cloud managerHostProxy pattern)
@@ -1496,14 +1643,20 @@ function connect() {
       if (mcpRegistered) mcpConfigPath = 'registered'  // flag to skip re-registration
     }
 
-    // Banner — use the printClockInBanner from onboarding for consistent look
-    const { printClockInBanner: printBanner } = await import('./onboarding.js')
-    printBanner({
-      agentHandle: argv.agent,
-      model: argv.provider,
-      seat: null,
-      workspace,
-    })
+    // Banner — show clock-in card once, reconnect banner on subsequent connects
+    if (!hasShownClockInBanner) {
+      hasShownClockInBanner = true
+      const { printClockInBanner } = await import('./onboarding.js')
+      printClockInBanner({
+        agentHandle: argv.agent,
+        model: 'Claude Opus 4.6',
+        seat: onboardingSeat,
+        workspace,
+      })
+    } else {
+      const { printReconnectBanner } = await import('./onboarding.js')
+      printReconnectBanner()
+    }
   })
 
   ws.on('message', (data) => {
@@ -1536,10 +1689,23 @@ function connect() {
     }
     activeChildren.clear()
 
-    // Auth rejection — don't retry, token is invalid or missing
+    // Auth rejection — try to re-hire once to get a fresh token before giving up
     if (code === 1008) {
+      if (!tokenRetryAttempted) {
+        tokenRetryAttempted = true
+        log(chalk.yellow('Token rejected, attempting automatic re-authentication...'))
+        refreshTokenAndReconnect().catch((err) => {
+          console.log('')
+          console.log(chalk.red.bold('  Connection rejected: invalid or expired token.'))
+          console.log(chalk.red(`  Re-auth failed: ${err.message}`))
+          console.log(chalk.yellow('  Run "npx @office-xyz/claude-code" again to re-authenticate.'))
+          console.log('')
+          process.exit(1)
+        })
+        return
+      }
       console.log('')
-      console.log(chalk.red.bold('  Connection rejected: invalid or expired token.'))
+      console.log(chalk.red.bold('  Connection rejected: invalid or expired token (retry exhausted).'))
       console.log(chalk.yellow('  Run "npx @office-xyz/claude-code" again to re-authenticate.'))
       console.log('')
       process.exit(1)
@@ -1856,7 +2022,7 @@ async function startup() {
 
   // Interactive onboarding mode: login → select office → name agent → clock in
   try {
-    const { runOnboarding, printClockInBanner } = await import('./onboarding.js')
+    const { runOnboarding } = await import('./onboarding.js')
     const result = await runOnboarding()
 
     // Update runtime config with onboarding result
@@ -1864,6 +2030,7 @@ async function startup() {
     argv.token = result.token
     hostId = result.agent
     label = result.agent.split('.')[0] || result.agent
+    onboardingSeat = result.seat || null
 
     // Rebuild manager URL with new agent/token
     const newManagerUrl = new URL(argv.manager)
@@ -1872,13 +2039,7 @@ async function startup() {
     newManagerUrl.searchParams.set('token', result.token)
     managerUrl.href = newManagerUrl.href
 
-    printClockInBanner({
-      agentHandle: result.agent,
-      model: `Claude Opus 4.6`,
-      seat: result.seat,
-      workspace: workspace,
-    })
-
+    // Banner will show once in connect() → ws.on('open') after fully ready
     connect()
     connectLocalDevice()
   } catch (err) {

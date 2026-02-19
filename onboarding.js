@@ -125,41 +125,77 @@ export async function checkForUpdate() {
   }
 }
 
-// ── Emoji Hub Art ─────────────────────────────────────────────────────────
-// Central 🏠 office hub connecting cloud ☁️, local 💻📱, AI 🤖, and hardware 🖥️
+// ── Pixel House Art ──────────────────────────────────────────────────────
+// Compact pixel-art office building used across all banners.
 
-// ── Banner ────────────────────────────────────────────────────────────────
-//
-// Emoji hub: 🏠 center orchestrating ☁️ cloud, 💻 desktop, 📱 mobile, 🤖 AI, 🖥️ hardware
+const HOUSE_COLOR = '#6B7280'
+const BRAND_COLOR = '#5B7FFF'
 
-export function printBanner(subtitle = 'Manage AI agents across local & cloud devices') {
+const HOUSE_LINES = [
+  '      ▄▄',
+  '    ▄████▄',
+  '  ▄████████▄',
+  ' ██▀▀▀▀▀▀▀▀██',
+  ' ██ ▪    ▪ ██',
+  ' ██   ▄▄   ██',
+  ' ██▄▄████▄▄██',
+]
+
+// Helper: print a row with house art on the left and info on the right.
+const HOUSE_COL_W = 22
+function _houseRow(house, info) {
+  const visual = house.replace(/\x1b\[[0-9;]*m/g, '')
+  const padded = house + ' '.repeat(Math.max(0, HOUSE_COL_W - visual.length))
+  console.log('  ' + padded + (info || ''))
+}
+
+// ── Banner (startup, before clock-in) ────────────────────────────────────
+
+export function printBanner(subtitle = 'Connect your AI agents to the virtual office') {
+  const h = chalk.hex(HOUSE_COLOR)
+  const pkg = (() => { try { return require('./package.json') } catch { return {} } })()
+  const version = pkg.version ? ` v${pkg.version}` : ''
   console.log('')
-  console.log(chalk.dim('        ☁️          ☁️'))
-  console.log(chalk.dim('          ╲        ╱'))
-  console.log('    💻 ─── 🏠 ─── 📱')
-  console.log(chalk.dim('          ╱        ╲'))
-  console.log(chalk.dim('        🤖          🖥️'))
+  HOUSE_LINES.forEach(l => console.log('  ' + h(l)))
   console.log('')
-  console.log(chalk.bold.white('  Office.xyz'))
-  console.log(chalk.dim(`  ${subtitle}`))
+  console.log('  ' + chalk.bold(' Office') + chalk.hex(BRAND_COLOR).bold('.xyz') + chalk.dim(version))
+  console.log('  ' + chalk.dim(` ${subtitle}`))
   console.log('')
 }
 
+// ── Clock-in Banner (shown once after WS connected) ─────────────────────
+
 export function printClockInBanner({ agentHandle, model, seat, workspace }) {
+  const h = chalk.hex(HOUSE_COLOR)
+  const lines = HOUSE_LINES.map(l => h(l))
+
+  // Right-column info lines (aligned with house rows)
+  const info = [
+    /* row 0: chimney */  '',
+    /* row 1: roof    */  chalk.green.bold('✓ ') + chalk.bold('Clocked in to Office.xyz'),
+    /* row 2: roof    */  '',
+    /* row 3: wall    */  chalk.dim('Agent  ') + chalk.white(agentHandle),
+    /* row 4: windows */  chalk.dim('Model  ') + chalk.white(model || 'Claude Opus 4.6'),
+    /* row 5: door    */  seat ? chalk.dim('Seat   ') + chalk.white(seat) : chalk.dim('Dir    ') + chalk.white(workspace || process.cwd()),
+    /* row 6: base    */  seat ? chalk.dim('Dir    ') + chalk.white(workspace || process.cwd()) : '',
+  ]
+
   console.log('')
-  console.log(chalk.dim('        ☁️          ☁️'))
-  console.log(chalk.dim('          ╲        ╱') + '        ' + chalk.green.bold('✓ Clocked in to Office.xyz'))
-  console.log('    💻 ─── 🏠 ─── 📱')
-  console.log(chalk.dim('          ╱        ╲') + '        ' + chalk.dim('Agent:  ') + chalk.bold.white(agentHandle))
-  console.log(chalk.dim('        🤖          🖥️') + '      ' + chalk.dim('Model:  ') + chalk.white(model || 'Claude Opus 4.6'))
-  if (seat) {
-    console.log('                            ' + chalk.dim('Seat:   ') + chalk.white(seat))
+  for (let i = 0; i < lines.length; i++) {
+    _houseRow(lines[i], info[i])
   }
-  console.log('                            ' + chalk.dim('Dir:    ') + chalk.white(workspace || process.cwd()))
   console.log('')
-  console.log('                            ' + chalk.dim('Web:    ') + chalk.underline.cyan('https://office.xyz'))
+  _houseRow(chalk.bold(' Office') + chalk.hex(BRAND_COLOR).bold('.xyz'), chalk.dim('Web    ') + chalk.cyan.underline('https://office.xyz'))
   console.log('')
-  console.log('                            ' + chalk.dim('Press ') + chalk.yellow('Ctrl+C') + chalk.dim(' to clock out'))
+  _houseRow('', chalk.dim('Press ') + chalk.yellow('Ctrl+C') + chalk.dim(' to clock out'))
+  console.log('')
+}
+
+// ── Reconnect Banner (minimal, one line) ─────────────────────────────────
+
+export function printReconnectBanner() {
+  console.log('')
+  console.log('  ' + chalk.green('✓') + ' Reconnected to Office.xyz')
   console.log('')
 }
 
@@ -565,7 +601,6 @@ export async function runOnboarding() {
         if (freshToken) {
           spinner.succeed(`Welcome back, ${chalk.bold(cached.email || cached.displayName || 'user')}!`)
           console.log(chalk.dim(`  Reconnecting as ${cached.lastAgent.handle}...`))
-          console.log(chalk.dim(`  Web interface: ${chalk.underline.cyan('https://office.xyz')}`))
           return {
             agent: cached.lastAgent.handle,
             token: freshToken,
