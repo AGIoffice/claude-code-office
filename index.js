@@ -113,8 +113,8 @@ const argv = yargs(hideBin(process.argv))
   .option('verbose', {
     alias: 'v',
     type: 'boolean',
-    describe: 'Show debug logs with timestamps',
-    default: false,
+    describe: 'Show debug logs with timestamps (use --no-verbose to hide)',
+    default: true,
   })
   .example('$0', 'Interactive setup (login, create office, name agent)')
   .example('$0 --agent claude.my.office.xyz --token xxx', 'Direct connect (skip login)')
@@ -185,9 +185,16 @@ function shellEscapeArg(s) {
 // ── Logging ────────────────────────────────────────────────────────────────
 
 let label = argv.agent ? (argv.agent.split('.')[0] || argv.agent) : 'local-host'
+
+// Debug log — only shown with --verbose flag (timestamped, dim)
 function log(...args) {
   if (!argv.verbose) return
   console.log(chalk.dim(`[${new Date().toISOString()}][${label}]`), ...args)
+}
+
+// User-facing log — always shown (conversation activity, status updates)
+function info(...args) {
+  console.log(...args)
 }
 
 // ── MCP Server Pre-test ───────────────────────────────────────────────────
@@ -766,8 +773,8 @@ async function handleMessage(message) {
     const badge = chalk[channel.color](`[${channel.type}]`)
     const time = new Date().toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' })
     const sender = chalk.dim(channel.sender)
-    log(`${badge} ${chalk.dim(time)}  ${sender}`)
-    log(`  ${text.slice(0, 200)}${text.length > 200 ? '...' : ''}`)
+    info(`${badge} ${chalk.dim(time)}  ${sender}`)
+    info(`  ${text.slice(0, 200)}${text.length > 200 ? '...' : ''}`)
 
     // Kill previous command for THIS SESSION only. Other sessions continue in parallel.
     const prev = sessionId ? activeChildren.get(sessionId) : null
@@ -835,7 +842,7 @@ async function handleMessage(message) {
       promptToInject += `\n\n## Current Platform\nYou are responding via ${clientLabel}.`
       if (platformInfo.chatId) promptToInject += ` Chat ID: ${platformInfo.chatId}.`
       if (platformInfo.platformContext) promptToInject += `\n${platformInfo.platformContext}`
-      log(chalk.dim(`[platform] ${platformInfo.clientType}${platformInfo.chatId ? ` (chat: ${platformInfo.chatId})` : ''}`))
+      info(chalk.dim(`[platform] ${platformInfo.clientType}${platformInfo.chatId ? ` (chat: ${platformInfo.chatId})` : ''}`))
     }
     
     if (promptToInject) {
@@ -853,11 +860,11 @@ async function handleMessage(message) {
       : null
     let sessionRetried = false
 
-    log(chalk.blue(`Running: ${cmd} ${args.slice(0, 5).join(' ')}... [${args.length} args]`))
+    info(chalk.blue(`Running: ${cmd} ${args.slice(0, 5).join(' ')}... [${args.length} args]`))
     if (process.env.ANTHROPIC_API_KEY) {
-      log(chalk.dim(`  Auth: Claude login session (stripped inherited API key from env)`))
+      info(chalk.dim(`  Auth: Claude login session (stripped inherited API key from env)`))
     } else {
-      log(chalk.dim(`  Auth: Claude login session`))
+      info(chalk.dim(`  Auth: Claude login session`))
     }
 
     // 1. Send streaming.started
@@ -1418,7 +1425,7 @@ async function handleMessage(message) {
 
       if (fullText) {
         process.stdout.write('\n')
-        log(chalk[channel.color](`[${channel.type}] ←`) + chalk.dim(` ${fullText.slice(0, 120)}${fullText.length > 120 ? '...' : ''}`))
+        info(chalk[channel.color](`[${channel.type}] ←`) + chalk.dim(` ${fullText.slice(0, 120)}${fullText.length > 120 ? '...' : ''}`))
       }
 
       // Send streaming.completed
@@ -1924,7 +1931,7 @@ function connectLocalDevice() {
     // Ignore registration ack and other non-tool messages
     if (msg.type === 'tool_request') {
       const { requestId, toolName, params } = msg
-      log(chalk.cyan(`[device] tool_request: ${toolName}`))
+      info(chalk.cyan(`[device] tool_request: ${toolName}`))
       try {
         const result = await executeLocalTool(toolName, params || {})
         dws.send(JSON.stringify({ type: 'tool_response', requestId, result }))
