@@ -810,6 +810,29 @@ async function handleMessage(message) {
     const activeThinkingByIndex = new Map()
     const completedThinkingBlocks = []
 
+    // 🚀 PERF: Batch thinking deltas — accumulate for 80ms then send as one message
+    // Reduces WebSocket messages from ~50/s to ~12/s
+    let _thinkingBatchBuffer = ''
+    let _thinkingBatchTimer = null
+    let _thinkingBatchThinkingId = null
+    const flushThinkingBatch = () => {
+      if (_thinkingBatchTimer) { clearTimeout(_thinkingBatchTimer); _thinkingBatchTimer = null }
+      if (_thinkingBatchBuffer) {
+        sendJSON({
+          type: 'thinking_event',
+          sessionId,
+          commandId,
+          event: {
+            eventType: 'thinking_delta',
+            thinkingId: _thinkingBatchThinkingId,
+            text: _thinkingBatchBuffer,
+            timestamp: Date.now(),
+          },
+        })
+        _thinkingBatchBuffer = ''
+      }
+    }
+
     const emitToolStart = ({ toolUseId, toolName, input, timestamp }) => {
       const normalizedId = toolUseId || `tool-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
       const startedAt = Number.isFinite(timestamp) ? timestamp : Date.now()
@@ -920,7 +943,7 @@ async function handleMessage(message) {
           return
         }
 
-        // Thinking deltas
+        // Thinking deltas — 🚀 PERF: batched every 80ms to reduce WebSocket pressure
         if (streamEvent?.type === 'content_block_delta' && streamEvent?.delta?.type === 'thinking_delta') {
           const deltaText = streamEvent.delta.thinking || streamEvent.delta.text || ''
           if (!deltaText) return
@@ -935,17 +958,12 @@ async function handleMessage(message) {
               startedAt: now,
             })
           }
-          sendJSON({
-            type: 'thinking_event',
-            sessionId,
-            commandId,
-            event: {
-              eventType: 'thinking_delta',
-              thinkingId,
-              text: deltaText,
-              timestamp: now,
-            },
-          })
+          // Accumulate into batch buffer; flush after 80ms of quiet
+          _thinkingBatchThinkingId = thinkingId
+          _thinkingBatchBuffer += deltaText
+          if (!_thinkingBatchTimer) {
+            _thinkingBatchTimer = setTimeout(flushThinkingBatch, 80)
+          }
           return
         }
 
@@ -1021,6 +1039,8 @@ async function handleMessage(message) {
           if (blockIndex !== null) {
             const thinkingState = activeThinkingByIndex.get(blockIndex)
             if (thinkingState) {
+              // 🚀 PERF: Flush any pending thinking batch before sending thinking_end
+              flushThinkingBatch()
               const elapsedMs = Math.max(0, now - (thinkingState.startedAt || now))
               sendJSON({
                 type: 'thinking_event',
@@ -1516,6 +1536,11 @@ function connect() {
     stopHeartbeat()
     // Keep registry heartbeat running during reconnection — it's independent
     // of the WS connection and tells Chat Bridge the process is still alive.
+
+    // Reset cached state so reconnect does a full re-initialization
+    // (system prompt rebuild + MCP server re-registration)
+    cachedSystemPrompt = null
+    mcpConfigPath = null
 
     // Kill all active CLI processes on disconnect
     for (const [, entry] of activeChildren) {
