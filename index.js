@@ -1046,7 +1046,7 @@ async function handleMessage(message) {
     child.stderr.on('data', stderrHandler)
 
     // 4. On process exit, send completion events
-    const closeHandler = (code) => {
+    const closeHandler = (code, signal) => {
       clearInterval(heartbeatTimer) // Stop heartbeat — task is done
       if (sessionId && activeChildren.get(sessionId)?.child === child) activeChildren.delete(sessionId)
 
@@ -1059,7 +1059,26 @@ async function handleMessage(message) {
       // stale binding and retry without --resume so the user gets a fresh session.
       // This happens when a session expires on Anthropic's side (Claude's ~/.claude/ entries
       // don't live forever) or when the session data is from a different machine/workspace.
-      if (code !== 0 && attemptedResume && !sessionRetried && !fullText) {
+      //
+      // IMPORTANT: Do NOT treat signal kills (SIGTERM/SIGKILL) as resume failures!
+      // When chat-bridge/MHS restarts, the WS drops and we kill all active children.
+      // In that case code=null and signal='SIGTERM'. The session binding is still valid
+      // on Anthropic's servers — deleting it would prevent resume on the next message.
+      // Signal kill (e.g. SIGTERM from WS disconnect) — preserve session binding for next resume.
+      // Also skip retry: WS is down so we can't send results back anyway.
+      if (signal) {
+        if (attemptedResume) {
+          log(chalk.dim(`[session] CLI killed by ${signal}, preserving session binding for ${sessionId}`))
+        }
+        // Send streaming.completed if WS is still open (edge case)
+        if (wsRef && wsRef.readyState === 1) {
+          try {
+            sendJSON({ type: 'streaming.completed', sessionId, commandId, status: 'cancelled' })
+          } catch { /* ignore */ }
+        }
+        return
+      }
+      if (code !== 0 && !signal && attemptedResume && !sessionRetried && !fullText) {
         sessionRetried = true
         sessionMap.delete(sessionId)
         persistSessionMap()
