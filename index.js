@@ -618,11 +618,21 @@ async function handleMessage(message) {
           log(chalk.cyan(`[attach] Saved image → ${fpath}`))
         }
 
-        // File attachments (with URL or base64 data)
+        // File attachments (with URL, dataUrl, or raw base64)
         for (const att of attachments) {
           const fname = att.name || `file-${Date.now()}`
           const fpath = path.join(tmpDir, fname)
-          if (att.base64) {
+          if (att.dataUrl && typeof att.dataUrl === 'string') {
+            // dataUrl format: "data:image/png;base64,iVBOR..."
+            const match = att.dataUrl.match(/^data:[^;]*;base64,(.+)$/)
+            if (match) {
+              writeFileSync(fpath, Buffer.from(match[1], 'base64'))
+              attachmentPaths.push(fpath)
+              log(chalk.cyan(`[attach] Saved file (dataUrl) → ${fpath}`))
+            } else {
+              log(chalk.yellow(`[attach] Unrecognized dataUrl format for ${fname}`))
+            }
+          } else if (att.base64) {
             writeFileSync(fpath, Buffer.from(att.base64, 'base64'))
             attachmentPaths.push(fpath)
             log(chalk.cyan(`[attach] Saved file → ${fpath}`))
@@ -810,28 +820,9 @@ async function handleMessage(message) {
     const activeThinkingByIndex = new Map()
     const completedThinkingBlocks = []
 
-    // 🚀 PERF: Batch thinking deltas — accumulate for 80ms then send as one message
-    // Reduces WebSocket messages from ~50/s to ~12/s
-    let _thinkingBatchBuffer = ''
-    let _thinkingBatchTimer = null
-    let _thinkingBatchThinkingId = null
-    const flushThinkingBatch = () => {
-      if (_thinkingBatchTimer) { clearTimeout(_thinkingBatchTimer); _thinkingBatchTimer = null }
-      if (_thinkingBatchBuffer) {
-        sendJSON({
-          type: 'thinking_event',
-          sessionId,
-          commandId,
-          event: {
-            eventType: 'thinking_delta',
-            thinkingId: _thinkingBatchThinkingId,
-            text: _thinkingBatchBuffer,
-            timestamp: Date.now(),
-          },
-        })
-        _thinkingBatchBuffer = ''
-      }
-    }
+    // 🚀 PERF v2: thinking_delta is no longer sent to frontend.
+    // Only thinking_start and thinking_end are transmitted.
+    // Text is still accumulated locally in activeThinkingByIndex for completedThinkingBlocks metadata.
 
     const emitToolStart = ({ toolUseId, toolName, input, timestamp }) => {
       const normalizedId = toolUseId || `tool-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
@@ -958,12 +949,7 @@ async function handleMessage(message) {
               startedAt: now,
             })
           }
-          // Accumulate into batch buffer; flush after 80ms of quiet
-          _thinkingBatchThinkingId = thinkingId
-          _thinkingBatchBuffer += deltaText
-          if (!_thinkingBatchTimer) {
-            _thinkingBatchTimer = setTimeout(flushThinkingBatch, 80)
-          }
+          // 🚀 PERF v2: Only accumulate locally, do NOT send to frontend
           return
         }
 
@@ -1039,8 +1025,6 @@ async function handleMessage(message) {
           if (blockIndex !== null) {
             const thinkingState = activeThinkingByIndex.get(blockIndex)
             if (thinkingState) {
-              // 🚀 PERF: Flush any pending thinking batch before sending thinking_end
-              flushThinkingBatch()
               const elapsedMs = Math.max(0, now - (thinkingState.startedAt || now))
               sendJSON({
                 type: 'thinking_event',
@@ -1051,6 +1035,7 @@ async function handleMessage(message) {
                   thinkingId: thinkingState.id,
                   timestamp: now,
                   elapsedMs,
+                  text: thinkingState.text || '',  // full thinking text for on-demand expand
                 },
               })
               completedThinkingBlocks.push({
