@@ -289,13 +289,88 @@ function persistSessionMap() {
   try {
     require('fs').mkdirSync(SESSION_MAP_DIR, { recursive: true })
     require('fs').writeFileSync(SESSION_MAP_FILE, JSON.stringify([...sessionMap]), 'utf-8')
-  } catch { /* best-effort */ }
+  } catch (err) {
+    log(chalk.yellow(`[session] Failed to persist session map to ${SESSION_MAP_FILE}: ${err?.message || err}`))
+  }
 }
 
 // Track active command processes PER SESSION for concurrent conversation support.
 // Key: sessionId, Value: { child, commandId }. Different clients (web, Telegram)
 // use different sessionIds and can run in parallel without killing each other.
 const activeChildren = new Map()
+
+// ── History Fetch from Chat Bridge (fallback when --resume unavailable) ──────
+// Cloud agents use fetchHistoryFromChatBridge to restore context after restart.
+// Local-host now does the same: when --resume is not available, fetch conversation
+// history from Chat Bridge DB and inject it as system prompt context.
+const sessionHistorySynced = new Set()
+
+/**
+ * Parse a VO sessionId (agentId--userId--conversationId) into parts.
+ */
+function parseSessionId(sessionId) {
+  const parts = (sessionId || '').split('--')
+  return {
+    agentId: parts[0] || '',
+    userId: parts[1] || '',
+    conversationId: parts[2] || null,
+  }
+}
+
+/**
+ * Fetch conversation history from Chat Bridge for a given session.
+ * Returns a formatted string suitable for --append-system-prompt injection.
+ * Returns empty string if no history or fetch fails.
+ */
+async function fetchHistoryForPrompt(sessionId) {
+  if (!sessionId) return ''
+  // Only fetch once per session to avoid repeated slow requests
+  if (sessionHistorySynced.has(sessionId)) return ''
+  sessionHistorySynced.add(sessionId)
+
+  const { agentId, userId, conversationId } = parseSessionId(sessionId)
+  if (!agentId || !userId) return ''
+
+  const chatBridgeUrl =
+    process.env.CHAT_BRIDGE_HTTP_URL ||
+    process.env.CHAT_BRIDGE_URL ||
+    'https://chatbridge.aladdinagi.xyz'
+
+  const params = new URLSearchParams({ userId })
+  if (conversationId) params.set('conversationId', conversationId)
+  const url = `${chatBridgeUrl}/api/${encodeURIComponent(agentId)}/conversations?${params.toString()}`
+
+  try {
+    log(chalk.gray(`[history-sync] Fetching history from Chat Bridge for resume fallback...`))
+    const response = await fetch(url, {
+      headers: { Accept: 'application/json' },
+      signal: AbortSignal.timeout(5000),
+    })
+    if (!response.ok) return ''
+
+    const data = await response.json()
+    const historyArray = Array.isArray(data.messages) ? data.messages
+      : Array.isArray(data.history) ? data.history : []
+
+    if (historyArray.length === 0) return ''
+
+    // Convert to readable conversation format for system prompt injection
+    const turns = historyArray
+      .filter(msg => msg.content && ['user', 'assistant'].includes(msg.role))
+      .slice(-40) // Keep last 40 turns to avoid token overflow
+      .map(msg => `${msg.role === 'user' ? 'Human' : 'Assistant'}: ${
+        typeof msg.content === 'string' ? msg.content.slice(0, 2000) : '[complex content]'
+      }`)
+
+    if (turns.length === 0) return ''
+
+    log(chalk.green(`[history-sync] Loaded ${turns.length} turns from Chat Bridge for context injection`))
+    return `\n\n## Previous Conversation Context\nThe following is the recent conversation history from this session. Continue naturally from where we left off.\n\n${turns.join('\n\n')}`
+  } catch (error) {
+    log(chalk.yellow(`[history-sync] Failed to fetch history: ${error?.message || error}`))
+    return ''
+  }
+}
 
 // ── System Prompt & MCP (First-Class Citizen) ──────────────────────────────
 // Built on connect, cached for the lifetime of the connection.
@@ -618,11 +693,31 @@ async function handleMessage(message) {
     } else if (sessionId) {
       log(chalk.yellow(`[session] No resume binding for ${sessionId} (map size: ${sessionMap.size})`))
     }
+
+    // ── History injection fallback ──────────────────────────────────────────
+    // When --resume is not available (no session binding, e.g. after chat-bridge
+    // restart or clock-out/in), fetch conversation history from Chat Bridge DB
+    // and inject it into the system prompt. This mirrors what the cloud adapter
+    // (host-adapter-claude-agent.js) does via fetchHistoryFromChatBridge().
+    // Pre-fetch here so it's available for both initial run and retry path.
+    let historyContext = ''
+    if (!attemptedResume && sessionId) {
+      historyContext = await fetchHistoryForPrompt(sessionId)
+      if (historyContext) {
+        log(chalk.green(`[history-sync] Fetched conversation history for context injection`))
+      }
+    }
+
     // System prompt + platform context injection.
     // shell: false — no escaping needed, args passed directly.
     let systemPromptTmpFile = null
     const platformInfo = message.platformInfo || null
     let promptToInject = cachedSystemPrompt || ''
+
+    // Inject history context when --resume is not available
+    if (historyContext) {
+      promptToInject += historyContext
+    }
     
     // Append platform context so agent knows the message source (Telegram/Slack/Web)
     if (platformInfo?.clientType) {
@@ -1144,12 +1239,30 @@ async function handleMessage(message) {
         completedToolActions.length = 0
         activeThinkingByIndex.clear()
         completedThinkingBlocks.length = 0
-        // Spawn fresh without --resume
+        // Fetch history from Chat Bridge for context injection on retry
+        // (original args had --resume so history wasn't fetched initially)
+        let retryArgs = argsWithoutResume
+        if (sessionId) {
+          try {
+            const retryHistory = await fetchHistoryForPrompt(sessionId)
+            if (retryHistory) {
+              // Rebuild args: replace --append-system-prompt value with history-enriched version
+              const retryPrompt = (cachedSystemPrompt || '') + retryHistory
+              retryArgs = retryArgs.map((a, i, arr) =>
+                i > 0 && arr[i - 1] === '--append-system-prompt' ? retryPrompt : a
+              )
+              log(chalk.green(`[session-retry] Injected conversation history into retry system prompt`))
+            }
+          } catch (err) {
+            log(chalk.yellow(`[session-retry] History fetch failed (continuing without): ${err.message}`))
+          }
+        }
+        // Spawn fresh without --resume (with history context if available)
         const childEnvRetry = { ...process.env }
         delete childEnvRetry.ANTHROPIC_API_KEY
-        child = spawn(cmd, argsWithoutResume, { cwd: workspace, env: childEnvRetry, stdio: ['ignore', 'pipe', 'pipe'], shell: false })
+        child = spawn(cmd, retryArgs, { cwd: workspace, env: childEnvRetry, stdio: ['ignore', 'pipe', 'pipe'], shell: false })
         if (sessionId) activeChildren.set(sessionId, { child, commandId })
-        log(chalk.blue(`[session-retry] Re-running: ${cmd} ${argsWithoutResume.slice(0, 5).join(' ')}... [${argsWithoutResume.length} args]`))
+        log(chalk.blue(`[session-retry] Re-running: ${cmd} ${retryArgs.slice(0, 5).join(' ')}... [${retryArgs.length} args]`))
         // Rewire NDJSON parser + handlers onto the new child
         const rlRetry = createInterface({ input: child.stdout })
         rlRetry.on('line', lineHandler)
@@ -1182,8 +1295,13 @@ async function handleMessage(message) {
         } else {
           sessionMap.set(sessionId, resultSessionId)
           persistSessionMap()
-          log(chalk.dim(`Session mapped: ${sessionId} → ${resultSessionId}`))
+          log(chalk.green(`[session] Mapped: ${sessionId} → ${resultSessionId} (map size: ${sessionMap.size}, file: ${SESSION_MAP_FILE})`))
         }
+      } else if (!resultSessionId && sessionId) {
+        // Diagnostic: CLI completed but didn't emit session_id in result event
+        log(chalk.yellow(`[session] No session_id in result event (sessionId=${sessionId}, code=${code}, hasText=${!!fullText}, signal=${signal})`))
+      } else if (!sessionId) {
+        log(chalk.yellow(`[session] No VO sessionId in message — cannot track session (resultSessionId=${resultSessionId})`))
       }
 
       if (fullText) {
