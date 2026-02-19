@@ -16,10 +16,11 @@ import { WebSocket } from 'ws'
 import chalk from 'chalk'
 import yargs from 'yargs'
 import { hideBin } from 'yargs/helpers'
-import { spawn } from 'child_process'
+import { spawn, execSync, exec as execCb } from 'child_process'
+import { promisify } from 'util'
+const execAsync = promisify(execCb)
 import { createInterface } from 'readline'
 import { writeFileSync, readFileSync, mkdtempSync, mkdirSync, unlinkSync } from 'fs'
-import { execSync } from 'child_process'
 import path from 'path'
 import os from 'os'
 import { fileURLToPath } from 'url'
@@ -269,6 +270,16 @@ let hasShownClockInBanner = false // Prevent duplicate banners
 const MAX_RECONNECT_DELAY_MS = 30_000
 let registryHeartbeatTimer = null
 const REGISTRY_HEARTBEAT_INTERVAL_MS = 30_000  // Report liveness to Registry every 30s
+
+// ── Graceful shutdown handling ────────────────────────────────────────────
+// During ECS rolling deployments, Chat Bridge sends `server_shutdown` before
+// closing the WS.  When we see that message, we keep active CLI processes
+// alive and buffer outbound events, then flush the buffer after reconnect.
+let gracefulDisconnect = false
+let gracefulKillTimer = null
+const pendingSendBuffer = []
+const GRACEFUL_RECONNECT_TIMEOUT_MS = 60_000  // Kill children if reconnect takes >60s
+const MAX_PENDING_BUFFER = 1000               // Safety cap on buffered events
 const workspace = path.resolve(argv.workspace)
 const model = argv.model || providerConfig.defaultModel
 
@@ -538,8 +549,13 @@ async function registerMcpServer() {
     const mcpName = `vo-${agentHandle.split('.')[0]}`
 
     // Remove existing (idempotent)
+    // 🔧 Use async exec instead of execSync to avoid blocking the event loop.
+    // execSync freezes the event loop for up to 10s, preventing WebSocket pong
+    // responses. Node.js processes timer callbacks (heartbeat) before I/O
+    // callbacks (pong) after unblock, so the heartbeat sees isAlive=false and
+    // terminates the connection — causing an infinite reconnection loop.
     try {
-      execSync(`claude mcp remove ${mcpName}`, { stdio: 'ignore', timeout: 5000 })
+      await execAsync(`claude mcp remove ${mcpName}`, { timeout: 5000 })
     } catch { /* ignore — might not exist */ }
 
     // Register using `claude mcp add-json --scope user` — the only scope that works
@@ -556,8 +572,7 @@ async function registerMcpServer() {
       },
     })
 
-    execSync(`claude mcp add-json ${mcpName} '${serverConfig.replace(/'/g, "'\\''")}' --scope user`, {
-      stdio: 'pipe',
+    await execAsync(`claude mcp add-json ${mcpName} '${serverConfig.replace(/'/g, "'\\''")}' --scope user`, {
       timeout: 10000,
     })
     log(chalk.green(`MCP server '${mcpName}' registered (--scope user)`))
@@ -625,6 +640,11 @@ function resolveChannel(message) {
 function sendJSON(payload) {
   if (wsRef && wsRef.readyState === WebSocket.OPEN) {
     wsRef.send(JSON.stringify(payload))
+  } else if (gracefulDisconnect) {
+    // Buffer during graceful disconnect — flushed after reconnect
+    if (pendingSendBuffer.length < MAX_PENDING_BUFFER) {
+      pendingSendBuffer.push(JSON.stringify(payload))
+    }
   }
 }
 
@@ -1625,6 +1645,22 @@ function connect() {
 
     sendHostMeta(ws)
 
+    // ── Flush buffered events from graceful disconnect ────────────────
+    // Must happen AFTER sendHostMeta so the new Chat Bridge instance
+    // recognises this host before receiving streaming events.
+    if (gracefulDisconnect && pendingSendBuffer.length > 0) {
+      log(chalk.green(`[shutdown] Reconnected — flushing ${pendingSendBuffer.length} buffered events`))
+      for (const data of pendingSendBuffer) {
+        try { ws.send(data) } catch { /* ignore */ }
+      }
+    }
+    pendingSendBuffer.length = 0
+    gracefulDisconnect = false
+    if (gracefulKillTimer) {
+      clearTimeout(gracefulKillTimer)
+      gracefulKillTimer = null
+    }
+
     // Registry heartbeat: report liveness independently of WS ping/pong.
     // This lets Chat Bridge know the agent process is alive even during
     // brief WS reconnection windows.
@@ -1667,6 +1703,12 @@ function connect() {
       log(chalk.red(`Bad message: ${err.message}`))
       return
     }
+    // Chat Bridge sends `server_shutdown` before closing during rolling deploys
+    if (message.type === 'server_shutdown') {
+      gracefulDisconnect = true
+      log(chalk.yellow('[shutdown] Server announced graceful restart — keeping active sessions alive'))
+      return
+    }
     handleMessage(message)
   })
 
@@ -1678,12 +1720,31 @@ function connect() {
     // Keep registry heartbeat running during reconnection — it's independent
     // of the WS connection and tells Chat Bridge the process is still alive.
 
-    // Reset cached state so reconnect does a full re-initialization
-    // (system prompt rebuild + MCP server re-registration)
+    // Reset system prompt so reconnect rebuilds it (prompt can change
+    // between sessions). MCP server registration is persistent in Claude
+    // Code's config, so don't reset mcpConfigPath — re-running execSync
+    // on every reconnect blocks the event loop and kills the heartbeat.
     cachedSystemPrompt = null
-    mcpConfigPath = null
 
-    // Kill all active CLI processes on disconnect
+    // ── Graceful disconnect: keep children alive, buffer output ───────
+    if (gracefulDisconnect && code !== 1008) {
+      log(chalk.yellow(`[shutdown] Graceful disconnect — keeping ${activeChildren.size} active children alive, buffering output`))
+      // Safety timeout: if reconnect doesn't happen within 60s, give up
+      gracefulKillTimer = setTimeout(() => {
+        log(chalk.red('[shutdown] Reconnect timeout — killing buffered children'))
+        for (const [, entry] of activeChildren) {
+          try { entry?.child?.kill('SIGTERM') } catch { /* ignore */ }
+        }
+        activeChildren.clear()
+        pendingSendBuffer.length = 0
+        gracefulDisconnect = false
+        gracefulKillTimer = null
+      }, GRACEFUL_RECONNECT_TIMEOUT_MS)
+      scheduleReconnect()
+      return
+    }
+
+    // Non-graceful (crash/error): kill all active CLI processes
     for (const [, entry] of activeChildren) {
       try { entry?.child?.kill('SIGTERM') } catch { /* ignore */ }
     }
@@ -1721,8 +1782,10 @@ function connect() {
 
 function scheduleReconnect() {
   reconnectAttempts++
-  const delay = Math.min(2000 * Math.pow(1.5, reconnectAttempts - 1), MAX_RECONNECT_DELAY_MS)
-  log(chalk.yellow(`Reconnecting in ${(delay / 1000).toFixed(1)}s (attempt ${reconnectAttempts})...`))
+  // Faster reconnect during graceful shutdown (500ms base) vs crash (2s base)
+  const baseDelay = gracefulDisconnect ? 500 : 2000
+  const delay = Math.min(baseDelay * Math.pow(1.5, reconnectAttempts - 1), MAX_RECONNECT_DELAY_MS)
+  log(chalk.yellow(`Reconnecting in ${(delay / 1000).toFixed(1)}s (attempt ${reconnectAttempts})${gracefulDisconnect ? ' [graceful]' : ''}...`))
   setTimeout(connect, delay)
 }
 

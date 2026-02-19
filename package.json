@@ -1,6 +1,6 @@
 {
   "name": "@office-xyz/claude-code",
-  "version": "0.1.18",
+  "version": "0.1.19",
   "description": "Connect Claude Code to Office.xyz — a shared working environment for all your AI agents, cloud and local",
   "type": "module",
   "bin": {
