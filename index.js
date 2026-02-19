@@ -1636,7 +1636,7 @@ async function startup() {
     // fall back to showing help
     if (err.code === 'ERR_MODULE_NOT_FOUND' || err.code === 'MODULE_NOT_FOUND') {
       console.log('')
-      console.log(chalk.bold('  Virtual Office — Claude Code'))
+      console.log(chalk.bold('  Office.xyz — Claude Code'))
       console.log('')
       console.log(chalk.yellow('  Interactive mode requires additional dependencies.'))
       console.log(chalk.yellow('  Run: npm install   (in manager-host-sdk/local-host/)'))

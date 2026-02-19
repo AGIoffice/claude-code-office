@@ -125,67 +125,41 @@ export async function checkForUpdate() {
   }
 }
 
-// ── Adam Sprite Art (auto-generated from pixel art sprite sheet) ──────────
-// Half-block rendering: 2x2 pixels → 1 char, truecolor ANSI
-import { ADAM_IDLE_FRAMES, ADAM_SIT_FRAME, ADAM_FRAMES } from './adam-frames.js'
+// ── Emoji Hub Art ─────────────────────────────────────────────────────────
+// Central 🏠 office hub connecting cloud ☁️, local 💻📱, AI 🤖, and hardware 🖥️
 
 // ── Banner ────────────────────────────────────────────────────────────────
+//
+// Emoji hub: 🏠 center orchestrating ☁️ cloud, 💻 desktop, 📱 mobile, 🤖 AI, 🖥️ hardware
 
-export function printBanner(subtitle = 'Manage Your AI Agents') {
-  const frame = ADAM_IDLE_FRAMES[0]
-
-  // Text lines aligned to Adam sprite rows (~23 rows)
-  // Adam is ~32 chars wide; text appears to the right with padding
-  const textLines = [
-    '',
-    '',
-    '',
-    '',
-    '',
-    '',
-    '',
-    '',
-    chalk.bold.white('  Virtual Office'),
-    chalk.dim(`  ${subtitle}`),
-    '',
-    chalk.dim('  office.xyz'),
-  ]
-
+export function printBanner(subtitle = 'Manage AI agents across local & cloud devices') {
   console.log('')
-  for (let i = 0; i < frame.length; i++) {
-    console.log('  ' + frame[i] + (textLines[i] || ''))
-  }
+  console.log(chalk.dim('        ☁️          ☁️'))
+  console.log(chalk.dim('          ╲        ╱'))
+  console.log('    💻 ─── 🏠 ─── 📱')
+  console.log(chalk.dim('          ╱        ╲'))
+  console.log(chalk.dim('        🤖          🖥️'))
+  console.log('')
+  console.log(chalk.bold.white('  Office.xyz'))
+  console.log(chalk.dim(`  ${subtitle}`))
   console.log('')
 }
 
 export function printClockInBanner({ agentHandle, model, seat, workspace }) {
-  const frame = ADAM_SIT_FRAME
-
-  // Right-side info lines aligned to Adam's sitting sprite (~23 rows)
-  const infoLines = [
-    '',
-    '',
-    '',
-    '',
-    '',
-    chalk.green.bold('  ✓ Clocked in to Virtual Office'),
-    '',
-    chalk.dim('  Agent:  ') + chalk.bold.white(agentHandle),
-    chalk.dim('  Model:  ') + chalk.white(model || 'Claude Opus 4.6'),
-    seat ? (chalk.dim('  Seat:   ') + chalk.white(seat)) : '',
-    chalk.dim('  Dir:    ') + chalk.white(workspace || process.cwd()),
-    '',
-    chalk.dim('  Web:    ') + chalk.underline.cyan('https://beta.office.xyz'),
-    '',
-    chalk.dim('  Press ') + chalk.yellow('Ctrl+C') + chalk.dim(' to clock out'),
-  ]
-
   console.log('')
-  for (let i = 0; i < Math.max(frame.length, infoLines.length); i++) {
-    const sprite = (i < frame.length) ? frame[i] : ''
-    const info = (i < infoLines.length) ? infoLines[i] : ''
-    console.log('  ' + sprite + info)
+  console.log(chalk.dim('        ☁️          ☁️'))
+  console.log(chalk.dim('          ╲        ╱') + '        ' + chalk.green.bold('✓ Clocked in to Office.xyz'))
+  console.log('    💻 ─── 🏠 ─── 📱')
+  console.log(chalk.dim('          ╱        ╲') + '        ' + chalk.dim('Agent:  ') + chalk.bold.white(agentHandle))
+  console.log(chalk.dim('        🤖          🖥️') + '      ' + chalk.dim('Model:  ') + chalk.white(model || 'Claude Opus 4.6'))
+  if (seat) {
+    console.log('                            ' + chalk.dim('Seat:   ') + chalk.white(seat))
   }
+  console.log('                            ' + chalk.dim('Dir:    ') + chalk.white(workspace || process.cwd()))
+  console.log('')
+  console.log('                            ' + chalk.dim('Web:    ') + chalk.underline.cyan('https://office.xyz'))
+  console.log('')
+  console.log('                            ' + chalk.dim('Press ') + chalk.yellow('Ctrl+C') + chalk.dim(' to clock out'))
   console.log('')
 }
 
@@ -582,7 +556,7 @@ export async function runOnboarding() {
 
         spinner.succeed(`Welcome back, ${chalk.bold(cached.email || cached.displayName || 'user')}!`)
         console.log(chalk.dim(`  Reconnecting as ${cached.lastAgent.handle}...`))
-        console.log(chalk.dim(`  Web interface: ${chalk.underline.cyan('https://beta.office.xyz')}`))
+        console.log(chalk.dim(`  Web interface: ${chalk.underline.cyan('https://office.xyz')}`))
         return {
           agent: cached.lastAgent.handle,
           token: freshToken,
