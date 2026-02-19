@@ -520,7 +520,58 @@ async function handleMessage(message) {
 
   if (type === 'command' || type === 'userMessage') {
     // Normalize
-    const text = message.command || message.content || ''
+    let text = message.command || message.content || ''
+
+    // ── Attachment / image handling ──────────────────────────────────────
+    // Save any attached images or files to temp dir so Claude Code can
+    // read them via its built-in Read tool (which supports images natively).
+    const attachmentPaths = []
+    try {
+      const images = Array.isArray(message.images) ? message.images : []
+      const attachments = Array.isArray(message.attachments) ? message.attachments : []
+
+      if (images.length || attachments.length) {
+        const tmpDir = mkdtempSync(path.join(os.tmpdir(), 'vo-attach-'))
+
+        // Inline base64 images (e.g. from Telegram photos, screenshots)
+        for (const img of images) {
+          if (!img.base64) continue
+          const ext = (img.mimeType || 'image/png').split('/')[1] || 'png'
+          const fpath = path.join(tmpDir, `image-${Date.now()}-${Math.random().toString(36).slice(2)}.${ext}`)
+          writeFileSync(fpath, Buffer.from(img.base64, 'base64'))
+          attachmentPaths.push(fpath)
+          log(chalk.cyan(`[attach] Saved image → ${fpath}`))
+        }
+
+        // File attachments (with URL or base64 data)
+        for (const att of attachments) {
+          const fname = att.name || `file-${Date.now()}`
+          const fpath = path.join(tmpDir, fname)
+          if (att.base64) {
+            writeFileSync(fpath, Buffer.from(att.base64, 'base64'))
+            attachmentPaths.push(fpath)
+            log(chalk.cyan(`[attach] Saved file → ${fpath}`))
+          } else if (att.url) {
+            // Append URL reference — Claude Code can use WebFetch if needed
+            attachmentPaths.push(`URL:${att.url}`)
+            log(chalk.cyan(`[attach] File URL → ${att.url}`))
+          }
+        }
+      }
+    } catch (err) {
+      log(chalk.yellow(`[attach] Failed to process attachments: ${err.message}`))
+    }
+
+    // Append file paths to user message so Claude Code knows about them
+    if (attachmentPaths.length) {
+      const fileRefs = attachmentPaths
+        .map(p => p.startsWith('URL:') ? p : `File: ${p}`)
+        .join('\n')
+      text = text
+        ? `${text}\n\n[Attached files — use the Read tool to view them]\n${fileRefs}`
+        : `Please analyze the following attached files:\n${fileRefs}`
+    }
+
     if (!text) return
 
     const sessionId = message.sessionId || null
@@ -1358,8 +1409,7 @@ function connect() {
     if (code === 1008) {
       console.log('')
       console.log(chalk.red.bold('  Connection rejected: invalid or expired token.'))
-      console.log(chalk.yellow('  Please re-invite the agent from the Virtual Office UI'))
-      console.log(chalk.yellow('  to generate a fresh --token.'))
+      console.log(chalk.yellow('  Run "npx @office-xyz/claude-code" again to re-authenticate.'))
       console.log('')
       process.exit(1)
     }

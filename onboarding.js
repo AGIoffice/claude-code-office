@@ -398,7 +398,7 @@ const PROVIDER_LABELS = {
   openai: 'Codex',
   gemini: 'Gemini',
   deepseek: 'DeepSeek',
-  qwen: 'Qwen',
+  volcengine: 'Volcengine',
   kimi: 'Kimi',
   ollama: 'Ollama',
 }
@@ -526,7 +526,7 @@ export async function runOnboarding() {
         const agentName = cached.lastAgent.handle.split('.')[0]
         const officeId = cached.lastOfficeId || null
 
-        let freshToken = cached.lastAgent.connectionToken
+        let freshToken = null
         let seat = cached.lastAgent.seat
 
         if (agentName && officeId) {
@@ -536,7 +536,11 @@ export async function runOnboarding() {
               agentName,
               provider: 'claude-code',
             }, cached.sessionToken)
-            freshToken = result.connectionToken || freshToken
+
+            if (!result.connectionToken) {
+              throw new Error('Server returned no connectionToken')
+            }
+            freshToken = result.connectionToken
             seat = result.seat || seat
 
             // Update cached session with fresh token
@@ -549,19 +553,26 @@ export async function runOnboarding() {
               },
             })
           } catch (err) {
-            // If refresh fails, try with cached token anyway
-            console.log(chalk.dim(`  Token refresh failed (${err.message}), using cached token`))
+            // Token refresh failed — fall through to full browser login.
+            // Using a stale cached token would cause 1008 rejection because
+            // a successful /hire already rotated the token in the Registry.
+            console.log(chalk.dim(`  Token refresh failed (${err.message}), re-authenticating...`))
+            spinner.stop()
+            // Fall through to browser login below
           }
         }
 
-        spinner.succeed(`Welcome back, ${chalk.bold(cached.email || cached.displayName || 'user')}!`)
-        console.log(chalk.dim(`  Reconnecting as ${cached.lastAgent.handle}...`))
-        console.log(chalk.dim(`  Web interface: ${chalk.underline.cyan('https://office.xyz')}`))
-        return {
-          agent: cached.lastAgent.handle,
-          token: freshToken,
-          seat,
+        if (freshToken) {
+          spinner.succeed(`Welcome back, ${chalk.bold(cached.email || cached.displayName || 'user')}!`)
+          console.log(chalk.dim(`  Reconnecting as ${cached.lastAgent.handle}...`))
+          console.log(chalk.dim(`  Web interface: ${chalk.underline.cyan('https://office.xyz')}`))
+          return {
+            agent: cached.lastAgent.handle,
+            token: freshToken,
+            seat,
+          }
         }
+        // freshToken is null — fall through to browser login
       }
     } catch {
       // Session expired — fall through to login
@@ -593,6 +604,11 @@ export async function runOnboarding() {
       seat: hired.seat,
     },
   })
+
+  if (!hired.connectionToken) {
+    console.log(chalk.red('  Server did not return a connection token. Please try again.'))
+    process.exit(1)
+  }
 
   return {
     agent: hired.agentHandle,
