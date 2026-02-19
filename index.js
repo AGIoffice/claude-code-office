@@ -18,7 +18,7 @@ import yargs from 'yargs'
 import { hideBin } from 'yargs/helpers'
 import { spawn } from 'child_process'
 import { createInterface } from 'readline'
-import { writeFileSync, readFileSync, mkdtempSync } from 'fs'
+import { writeFileSync, readFileSync, mkdtempSync, mkdirSync, unlinkSync } from 'fs'
 import { execSync } from 'child_process'
 import path from 'path'
 import os from 'os'
@@ -276,7 +276,7 @@ const sessionMap = new Map()
 
 // Load persisted sessions from previous clock-in (if any)
 try {
-  const raw = require('fs').readFileSync(SESSION_MAP_FILE, 'utf-8')
+  const raw = readFileSync(SESSION_MAP_FILE, 'utf-8')
   const parsed = JSON.parse(raw)
   // Support both formats: Array of entries [[k,v], ...] and Object {k: v}
   const entries = Array.isArray(parsed) ? parsed : Object.entries(parsed)
@@ -287,8 +287,8 @@ try {
 /** Persist session map to disk (fire-and-forget) */
 function persistSessionMap() {
   try {
-    require('fs').mkdirSync(SESSION_MAP_DIR, { recursive: true })
-    require('fs').writeFileSync(SESSION_MAP_FILE, JSON.stringify([...sessionMap]), 'utf-8')
+    mkdirSync(SESSION_MAP_DIR, { recursive: true })
+    writeFileSync(SESSION_MAP_FILE, JSON.stringify([...sessionMap]), 'utf-8')
   } catch (err) {
     log(chalk.yellow(`[session] Failed to persist session map to ${SESSION_MAP_FILE}: ${err?.message || err}`))
   }
@@ -1203,7 +1203,7 @@ async function handleMessage(message) {
 
       // Clean up system prompt temp file
       if (systemPromptTmpFile) {
-        try { require('fs').unlinkSync(systemPromptTmpFile) } catch { /* ignore */ }
+        try { unlinkSync(systemPromptTmpFile) } catch { /* ignore */ }
       }
 
       // SESSION RETRY: If --resume failed (exit code 1, no response produced), clear the
@@ -1217,9 +1217,12 @@ async function handleMessage(message) {
       // on Anthropic's servers — deleting it would prevent resume on the next message.
       // Signal kill (e.g. SIGTERM from WS disconnect) — preserve session binding for next resume.
       // Also skip retry: WS is down so we can't send results back anyway.
-      if (signal) {
+      // NOTE: Node.js sometimes reports SIGTERM as code=143 (128+15) with signal=null,
+      // so we also check for exit codes >= 128 which indicate signal termination.
+      const killedBySignal = signal || (code !== null && code >= 128)
+      if (killedBySignal) {
         if (attemptedResume) {
-          log(chalk.dim(`[session] CLI killed by ${signal}, preserving session binding for ${sessionId}`))
+          log(chalk.dim(`[session] CLI killed by ${signal || `signal(code=${code})`}, preserving session binding for ${sessionId}`))
         }
         // Send streaming.completed if WS is still open (edge case)
         if (wsRef && wsRef.readyState === 1) {
