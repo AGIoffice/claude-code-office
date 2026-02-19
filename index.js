@@ -1726,6 +1726,15 @@ function connect() {
     // on every reconnect blocks the event loop and kills the heartbeat.
     cachedSystemPrompt = null
 
+    // ── Detect planned shutdown via close code (fallback) ──────────────
+    // If the server_shutdown JSON message was lost due to race condition,
+    // close code 1001 (Going Away) still indicates a planned shutdown
+    // (ECS rolling deploy, etc.). Enter graceful mode to preserve children.
+    if (!gracefulDisconnect && code === 1001) {
+      gracefulDisconnect = true
+      log(chalk.yellow('[shutdown] Server closed with 1001 (Going Away) — entering graceful mode'))
+    }
+
     // ── Graceful disconnect: keep children alive, buffer output ───────
     if (gracefulDisconnect && code !== 1008) {
       log(chalk.yellow(`[shutdown] Graceful disconnect — keeping ${activeChildren.size} active children alive, buffering output`))
