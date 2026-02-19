@@ -1192,7 +1192,7 @@ async function handleMessage(message) {
     child.stderr.on('data', stderrHandler)
 
     // 4. On process exit, send completion events
-    const closeHandler = (code, signal) => {
+    const closeHandler = async (code, signal) => {
       clearInterval(heartbeatTimer) // Stop heartbeat — task is done
       if (sessionId && activeChildren.get(sessionId)?.child === child) activeChildren.delete(sessionId)
 
