@@ -2049,13 +2049,23 @@ async function executeLocalTool(toolName, params) {
 
     case 'exec_command': {
       const { execSync } = await import('child_process')
-      const result = execSync(params.command, {
-        cwd: params.cwd || workspace,
-        timeout: params.timeout || 30000,
-        encoding: 'utf-8',
-        maxBuffer: 1024 * 1024,
-      })
-      return { stdout: result, exitCode: 0 }
+      try {
+        const result = execSync(params.command, {
+          cwd: params.cwd || workspace,
+          timeout: params.timeout || 30000,
+          encoding: 'utf-8',
+          maxBuffer: 1024 * 1024,
+          stdio: ['pipe', 'pipe', 'pipe'],  // capture stderr instead of printing to terminal
+        })
+        return { stdout: result, exitCode: 0 }
+      } catch (execErr) {
+        // Return stderr/exit code instead of throwing — the caller handles errors
+        return {
+          stdout: execErr.stdout || '',
+          stderr: execErr.stderr || execErr.message,
+          exitCode: execErr.status ?? 1,
+        }
+      }
     }
 
     default:

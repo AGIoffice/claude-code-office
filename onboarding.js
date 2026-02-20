@@ -666,6 +666,9 @@ export async function runOnboarding() {
         }
 
         if (freshToken) {
+          // Wait for Registry propagation before connecting — without this,
+          // Chat Bridge may still see the old token and reject with 1008.
+          await new Promise(resolve => setTimeout(resolve, 1000))
           spinner.succeed(`Reconnecting as ${chalk.bold(cached.lastAgent.handle)}...`)
           return {
             agent: cached.lastAgent.handle,
