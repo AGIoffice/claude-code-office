@@ -1636,7 +1636,11 @@ function connect() {
   ws.on('open', async () => {
     log(chalk.green('Connected to Virtual Office'))
     reconnectAttempts = 0
-    tokenRetryAttempted = false  // Reset so future disconnects can retry
+    // Only reset tokenRetryAttempted after connection is stable for 10s
+    // This prevents infinite 1008 reconnect loops where the server rejects
+    // the fresh token immediately after ws.open fires
+    const tokenResetTimer = setTimeout(() => { tokenRetryAttempted = false }, 10_000)
+    ws.once('close', () => clearTimeout(tokenResetTimer))
     isAlive = true
 
     // Heartbeat: ping + pong timeout detection (matches cloud managerHostProxy pattern)
