@@ -287,7 +287,27 @@ let gracefulKillTimer = null
 const pendingSendBuffer = []
 const GRACEFUL_RECONNECT_TIMEOUT_MS = 60_000  // Kill children if reconnect takes >60s
 const MAX_PENDING_BUFFER = 1000               // Safety cap on buffered events
-const workspace = path.resolve(argv.workspace)
+// ── Workspace: ensure a git-enabled working directory ─────────────────────
+// If the current directory isn't a git repo, create ~/Office.xyz/ and init git
+// so that server-side git probes (status, log, diff) work out of the box.
+const workspace = (() => {
+  const raw = path.resolve(argv.workspace)
+  try {
+    execSync('git rev-parse --is-inside-work-tree', { cwd: raw, stdio: 'pipe' })
+    return raw  // already a git repo
+  } catch {
+    // Not a git repo — create a dedicated workspace
+    const officeDir = path.join(os.homedir(), 'Office.xyz')
+    mkdirSync(officeDir, { recursive: true })
+    try {
+      execSync('git rev-parse --is-inside-work-tree', { cwd: officeDir, stdio: 'pipe' })
+    } catch {
+      execSync('git init', { cwd: officeDir, stdio: 'pipe' })
+      console.log(chalk.dim(`  Initialized workspace: ${officeDir}`))
+    }
+    return officeDir
+  }
+})()
 const model = argv.model || providerConfig.defaultModel
 
 // ── Session tracking ───────────────────────────────────────────────────────
