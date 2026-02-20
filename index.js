@@ -712,11 +712,15 @@ async function handleMessage(message) {
         const tmpDir = mkdtempSync(path.join(os.tmpdir(), 'vo-attach-'))
 
         // Inline base64 images (e.g. from Telegram photos, screenshots)
+        // Telegram sends: { type: 'base64', media_type: 'image/jpeg', data: '...' }
+        // Web Dialog sends: { base64: '...', mimeType: 'image/png' }
         for (const img of images) {
-          if (!img.base64) continue
-          const ext = (img.mimeType || 'image/png').split('/')[1] || 'png'
+          const b64 = img.base64 || img.data
+          if (!b64) continue
+          const mime = img.mimeType || img.media_type || 'image/png'
+          const ext = mime.split('/')[1] || 'png'
           const fpath = path.join(tmpDir, `image-${Date.now()}-${Math.random().toString(36).slice(2)}.${ext}`)
-          writeFileSync(fpath, Buffer.from(img.base64, 'base64'))
+          writeFileSync(fpath, Buffer.from(b64, 'base64'))
           attachmentPaths.push(fpath)
           log(chalk.cyan(`[attach] Saved image → ${fpath}`))
         }
