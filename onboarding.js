@@ -151,15 +151,28 @@ function _houseRow(house, info) {
 
 // ── Banner (startup, before clock-in) ────────────────────────────────────
 
-export function printBanner(subtitle = 'Connect your AI agents to the virtual office') {
+export function printBanner(subtitle = 'Manage your AI agents across local and cloud devices') {
   const h = chalk.hex(HOUSE_COLOR)
+  const b = chalk.hex(BRAND_COLOR)
   const pkg = (() => { try { return require('./package.json') } catch { return {} } })()
-  const version = pkg.version ? ` v${pkg.version}` : ''
+  const version = pkg.version ? `v${pkg.version}` : ''
+  const label = ` Office.xyz ${version} `
+  const innerW = 56  // inner width between │ and │
+  // Top border with label
+  const dashLeft = '──'
+  const dashRight = '─'.repeat(Math.max(0, innerW - 2 - label.length))
   console.log('')
-  HOUSE_LINES.forEach(l => console.log('  ' + h(l)))
-  console.log('')
-  console.log('  ' + chalk.bold(' Office') + chalk.hex(BRAND_COLOR).bold('.xyz') + chalk.dim(version))
-  console.log('  ' + chalk.dim(` ${subtitle}`))
+  console.log('  ' + b(`╭${dashLeft}${label}${dashRight}╮`))
+  // House lines inside box
+  HOUSE_LINES.forEach(l => {
+    const pad = ' '.repeat(Math.max(0, innerW - 1 - l.length))
+    console.log('  ' + b('│') + ' ' + h(l) + pad + b('│'))
+  })
+  // Subtitle line
+  const subPad = ' '.repeat(Math.max(0, innerW - 1 - subtitle.length))
+  console.log('  ' + b('│') + ' ' + chalk.dim(subtitle) + subPad + b('│'))
+  // Bottom border
+  console.log('  ' + b(`╰${'─'.repeat(innerW)}╯`))
   console.log('')
 }
 
