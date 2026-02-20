@@ -151,27 +151,55 @@ function _houseRow(house, info) {
 
 // ── Banner (startup, before clock-in) ────────────────────────────────────
 
-export function printBanner(subtitle = 'Manage your AI agents across local and cloud devices') {
+export function printBanner({ email, agentHandle, model, workspace } = {}) {
   const h = chalk.hex(HOUSE_COLOR)
   const b = chalk.hex(BRAND_COLOR)
   const pkg = (() => { try { return require('./package.json') } catch { return {} } })()
   const version = pkg.version ? `v${pkg.version}` : ''
   const label = ` Office.xyz ${version} `
-  const innerW = 56  // inner width between │ and │
-  // Top border with label
-  const dashLeft = '──'
-  const dashRight = '─'.repeat(Math.max(0, innerW - 2 - label.length))
+  const innerW = 72
+  const leftColW = 28  // visual width for left column (house + info)
+  const _strip = s => s.replace(/\x1b\[[0-9;]*m/g, '')
+
+  // Build left column
+  const userName = email ? email.split('@')[0] : ''
+  const welcome = userName ? `Welcome back, ${userName}!` : 'Welcome!'
+  const leftLines = [
+    '',
+    chalk.bold(welcome.length > leftColW ? welcome.slice(0, leftColW - 1) + '…' : welcome),
+    '',
+    ...HOUSE_LINES.map(l => h(l)),
+    '',
+    model ? chalk.dim(model) : '',
+    workspace ? chalk.dim(workspace) : '',
+  ]
+  // Build right column (max width = innerW - 1 - leftColW)
+  const d = chalk.dim
+  const rightLines = [
+    '',
+    chalk.bold('Manage Your AI Agents'),
+    '',
+    d('• Coordinate Local & Cloud Agents'),
+    d('• Configure SaaS Work Environments'),
+    d('• Create Bot Identities Across Channels'),
+    '',
+    agentHandle
+      ? d(`Agent: ${agentHandle}`)
+      : d(`Visit ${chalk.cyan.underline('https://office.xyz')}`),
+  ]
+  const maxRows = Math.max(leftLines.length, rightLines.length)
+
   console.log('')
-  console.log('  ' + b(`╭${dashLeft}${label}${dashRight}╮`))
-  // House lines inside box
-  HOUSE_LINES.forEach(l => {
-    const pad = ' '.repeat(Math.max(0, innerW - 1 - l.length))
-    console.log('  ' + b('│') + ' ' + h(l) + pad + b('│'))
-  })
-  // Subtitle line
-  const subPad = ' '.repeat(Math.max(0, innerW - 1 - subtitle.length))
-  console.log('  ' + b('│') + ' ' + chalk.dim(subtitle) + subPad + b('│'))
-  // Bottom border
+  console.log('  ' + b(`╭${'──'}${label}${'─'.repeat(Math.max(0, innerW - 2 - label.length))}╮`))
+  for (let i = 0; i < maxRows; i++) {
+    const left = leftLines[i] || ''
+    const right = rightLines[i] || ''
+    const lw = _strip(left).length
+    const rw = _strip(right).length
+    const gap = ' '.repeat(Math.max(1, leftColW - lw))
+    const tail = ' '.repeat(Math.max(0, innerW - 1 - leftColW - rw))
+    console.log('  ' + b('│') + ' ' + left + gap + right + tail + b('│'))
+  }
   console.log('  ' + b(`╰${'─'.repeat(innerW)}╯`))
   console.log('')
 }
@@ -180,27 +208,47 @@ export function printBanner(subtitle = 'Manage your AI agents across local and c
 
 export function printClockInBanner({ agentHandle, model, seat, workspace }) {
   const h = chalk.hex(HOUSE_COLOR)
-  const lines = HOUSE_LINES.map(l => h(l))
+  const b = chalk.hex(BRAND_COLOR)
+  const d = chalk.dim
+  const _strip = s => s.replace(/\x1b\[[0-9;]*m/g, '')
+  const innerW = 72
+  const leftColW = 20
 
-  // Right-column info lines (aligned with house rows)
-  const info = [
-    /* row 0: chimney */  '',
-    /* row 1: roof    */  chalk.green.bold('✓ ') + chalk.bold('Clocked in to Office.xyz'),
-    /* row 2: roof    */  '',
-    /* row 3: wall    */  chalk.dim('Agent  ') + chalk.white(agentHandle),
-    /* row 4: windows */  chalk.dim('Model  ') + chalk.white(model || 'Claude Opus 4.6'),
-    /* row 5: door    */  seat ? chalk.dim('Seat   ') + chalk.white(seat) : chalk.dim('Dir    ') + chalk.white(workspace || process.cwd()),
-    /* row 6: base    */  seat ? chalk.dim('Dir    ') + chalk.white(workspace || process.cwd()) : '',
+  const leftLines = [
+    '',
+    ...HOUSE_LINES.map(l => h(l)),
   ]
 
+  // Use non-breaking space for intentional blank lines ('' would be falsy)
+  const _ = ' '
+  const rightLines = [
+    chalk.green.bold('✓ ') + chalk.bold('Clocked in to Office.xyz'),
+    _,
+    d('Agent  ') + chalk.white(agentHandle),
+    d('Model  ') + chalk.white(model || 'Claude Opus 4.6'),
+    ...(seat ? [d('Seat   ') + chalk.white(seat)] : []),
+    d('Dir    ') + chalk.white(workspace || process.cwd()),
+    _,
+    d('• Coordinate Local & Cloud Agents'),
+    d('• Configure SaaS Work Environments'),
+    d('• Create Bot Identities Across Channels'),
+    _,
+    d('Press ') + chalk.yellow('Ctrl+C') + d(' to clock out'),
+  ]
+
+  const maxRows = Math.max(leftLines.length, rightLines.length)
   console.log('')
-  for (let i = 0; i < lines.length; i++) {
-    _houseRow(lines[i], info[i])
+  console.log('  ' + b(`╭──${' Office.xyz '}${'─'.repeat(Math.max(0, innerW - 2 - 12))}╮`))
+  for (let i = 0; i < maxRows; i++) {
+    const left = leftLines[i] || ''
+    const right = rightLines[i] || ''
+    const lw = _strip(left).length
+    const rw = _strip(right).length
+    const gap = ' '.repeat(Math.max(1, leftColW - lw))
+    const tail = ' '.repeat(Math.max(0, innerW - 1 - leftColW - rw))
+    console.log('  ' + b('│') + ' ' + left + gap + right + tail + b('│'))
   }
-  console.log('')
-  _houseRow(chalk.bold(' Office') + chalk.hex(BRAND_COLOR).bold('.xyz'), chalk.dim('Web    ') + chalk.cyan.underline('https://office.xyz'))
-  console.log('')
-  _houseRow('', chalk.dim('Press ') + chalk.yellow('Ctrl+C') + chalk.dim(' to clock out'))
+  console.log('  ' + b(`╰${'─'.repeat(innerW)}╯`))
   console.log('')
 }
 
@@ -551,16 +599,22 @@ async function selectOrHireAgent(officeId, sessionToken) {
  * @returns {{ agent: string, token: string, seat?: string }}
  */
 export async function runOnboarding() {
-  printBanner()
+  // 1. Check cached session (local file, instant)
+  const cached = loadSession()
+
+  // Show banner with cached user info if available
+  printBanner(cached?.sessionToken && cached?.lastAgent?.handle ? {
+    email: cached.email || cached.displayName,
+    agentHandle: cached.lastAgent.handle,
+    model: 'Claude Opus 4.6',
+    workspace: process.cwd(),
+  } : {})
 
   // Check for updates (non-blocking, runs in background)
   checkForUpdate()
 
   // 0. Pre-flight: check Claude Code CLI is installed and logged in
   await checkClaudeCodeCli()
-
-  // 1. Check cached session
-  const cached = loadSession()
 
   if (cached?.sessionToken && cached?.lastAgent?.handle) {
     // Quick reconnect path — always refresh token to avoid stale token rejection
@@ -612,8 +666,7 @@ export async function runOnboarding() {
         }
 
         if (freshToken) {
-          spinner.succeed(`Welcome back, ${chalk.bold(cached.email || cached.displayName || 'user')}!`)
-          console.log(chalk.dim(`  Reconnecting as ${cached.lastAgent.handle}...`))
+          spinner.succeed(`Reconnecting as ${chalk.bold(cached.lastAgent.handle)}...`)
           return {
             agent: cached.lastAgent.handle,
             token: freshToken,

@@ -2067,7 +2067,14 @@ async function executeLocalTool(toolName, params) {
 
 function shutdown() {
   console.log('')
-  log(chalk.yellow('Clocking out...'))
+  console.log('  ' + chalk.yellow('⏻ ') + chalk.bold('Clocked out of Office.xyz'))
+  console.log('')
+  console.log(chalk.dim('  • Coordinate Local & Cloud Agents'))
+  console.log(chalk.dim('  • Configure SaaS Work Environments'))
+  console.log(chalk.dim('  • Create Bot Identities Across Channels'))
+  console.log('')
+  console.log(chalk.dim('  Visit ') + chalk.cyan.underline('https://office.xyz') + chalk.dim(' to manage your agents'))
+  console.log('')
   // Stop registry heartbeat and unregister MCP server
   stopRegistryHeartbeat()
   unregisterMcpServer()
