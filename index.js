@@ -1598,7 +1598,7 @@ async function refreshTokenAndReconnect() {
       'Content-Type': 'application/json',
       'x-cli-session': cached.sessionToken,
     },
-    body: JSON.stringify({ officeId, agentName, provider: 'claude-code' }),
+    body: JSON.stringify({ officeId, agentName, provider: 'claude-code', roleId: cached.lastAgent?.roleId, roleCategory: cached.lastAgent?.roleCategory }),
     signal: AbortSignal.timeout(10000),
   })
 

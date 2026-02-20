@@ -545,6 +545,8 @@ async function selectOrHireAgent(officeId, sessionToken) {
           officeId,
           agentName: agent.name,
           provider: 'claude-code',
+          roleId: agent.role,
+          roleCategory: agent.roleCategory,
         }, sessionToken)
 
         spinner.succeed(`Reconnected: ${chalk.bold(result.agentHandle)} ${chalk.dim(`(${agent.role})`)}${result.seat ? chalk.dim(` · seat: ${result.seat}`) : ''}`)
@@ -638,6 +640,8 @@ export async function runOnboarding() {
               officeId,
               agentName,
               provider: 'claude-code',
+              roleId: cached.lastAgent.roleId,
+              roleCategory: cached.lastAgent.roleCategory,
             }, cached.sessionToken)
 
             if (!result.connectionToken) {
@@ -706,6 +710,8 @@ export async function runOnboarding() {
       handle: hired.agentHandle,
       connectionToken: hired.connectionToken,
       seat: hired.seat,
+      roleId: hired.roleId,
+      roleCategory: hired.roleCategory,
     },
   })
 
