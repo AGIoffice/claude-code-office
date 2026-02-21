@@ -102,6 +102,11 @@ const argv = yargs(hideBin(process.argv))
     describe: 'Working directory for the agent',
     default: process.cwd(),
   })
+  .option('novnc-url', {
+    type: 'string',
+    describe: 'noVNC URL for local screen sharing in Workspace Panel (or set NOVNC_URL env)',
+    default: process.env.NOVNC_URL || undefined,
+  })
   .option('cli-command', {
     type: 'string',
     describe: 'Override the CLI binary (e.g. /usr/local/bin/claude)',
@@ -672,6 +677,46 @@ function sendJSON(payload) {
     if (pendingSendBuffer.length < MAX_PENDING_BUFFER) {
       pendingSendBuffer.push(JSON.stringify(payload))
     }
+  }
+}
+
+/**
+ * Emit device:liveview workspace event so the Workspace Panel
+ * renders the local computer screen in the Computer tab.
+ * Uses the per-agent /api/workspace/event endpoint — isolation is
+ * guaranteed by broadcastWorkspaceEvent(agentId).
+ */
+async function emitDeviceLiveView(noVncUrl) {
+  if (!noVncUrl || !hostId || hostId === 'pending') return
+  const baseUrl =
+    process.env.CHAT_BRIDGE_HTTP_URL ||
+    process.env.CHAT_BRIDGE_URL ||
+    process.env.CHAT_BRIDGE_BASE_URL ||
+    'https://chatbridge.aladdinagi.xyz'
+  try {
+    const resp = await fetch(`${baseUrl}/api/workspace/event`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        agentId: hostId,
+        type: 'device:liveview',
+        payload: {
+          sessionId: `local-screen-${hostId}`,
+          noVncUrl,
+          deviceType: 'computer',
+          width: 1920,
+          height: 1080,
+        },
+      }),
+      signal: AbortSignal.timeout(5000),
+    })
+    if (resp.ok) {
+      log(chalk.green(`[screen] Emitted device:liveview → ${noVncUrl.substring(0, 60)}`))
+    } else {
+      log(chalk.yellow(`[screen] device:liveview HTTP ${resp.status}`))
+    }
+  } catch (err) {
+    log(chalk.yellow(`[screen] device:liveview failed: ${err?.message || err}`))
   }
 }
 
@@ -1714,6 +1759,10 @@ function connect() {
       if (mcpRegistered) mcpConfigPath = 'registered'  // flag to skip re-registration
     }
 
+    // Emit local screen sharing if noVNC URL is configured
+    const novncUrl = argv['novnc-url'] || process.env.NOVNC_URL
+    if (novncUrl) emitDeviceLiveView(novncUrl)
+
     // Banner — show clock-in card once, reconnect banner on subsequent connects
     if (!hasShownClockInBanner) {
       hasShownClockInBanner = true
@@ -1959,7 +2008,7 @@ function connectLocalDevice() {
     // Ignore registration ack and other non-tool messages
     if (msg.type === 'tool_request') {
       const { requestId, toolName, params } = msg
-      info(chalk.cyan(`[device] tool_request: ${toolName}`))
+      log(chalk.cyan(`[device] tool_request: ${toolName}${toolName === 'exec_command' && params?.command ? ` → ${params.command.slice(0, 80)}` : ''} (reqId: ${requestId})`))
       try {
         const result = await executeLocalTool(toolName, params || {})
         dws.send(JSON.stringify({ type: 'tool_response', requestId, result }))
