@@ -280,6 +280,7 @@ let tokenRetryAttempted = false  // Track whether we've already retried a 1008 r
 let onboardingSeat = null        // Seat assigned during onboarding, passed to clock-in banner
 let hasShownClockInBanner = false // Prevent duplicate banners
 const MAX_RECONNECT_DELAY_MS = 30_000
+let wakeFromSleep = false        // Set when system wake is detected
 let registryHeartbeatTimer = null
 const REGISTRY_HEARTBEAT_INTERVAL_MS = 30_000  // Report liveness to Registry every 30s
 
@@ -1709,8 +1710,24 @@ function connect() {
     isAlive = true
 
     // Heartbeat: ping + pong timeout detection (matches cloud managerHostProxy pattern)
+    let lastPingTime = Date.now()
     pingTimer = setInterval(() => {
       if (ws.readyState !== WebSocket.OPEN) { stopHeartbeat(); return }
+      const now = Date.now()
+      const elapsed = now - lastPingTime
+      lastPingTime = now
+
+      // Sleep detection: if timer gap is >3x expected interval, system was asleep.
+      // The WS is certainly dead, but network may not be ready yet.
+      if (elapsed > PING_INTERVAL_MS * 3) {
+        log(chalk.yellow(`System wake detected (${(elapsed / 1000).toFixed(0)}s gap) — reconnecting with network settle delay`))
+        wakeFromSleep = true
+        reconnectAttempts = 0  // Reset backoff — this isn't a server-side failure
+        stopHeartbeat()
+        try { ws.terminate() } catch { /* ignore */ }
+        return
+      }
+
       if (!isAlive) {
         log(chalk.red('Heartbeat timeout — no pong received, forcing reconnect'))
         stopHeartbeat()
@@ -1875,6 +1892,16 @@ function connect() {
 
 function scheduleReconnect() {
   reconnectAttempts++
+
+  // After system wake, wait longer for network interfaces to initialize
+  if (wakeFromSleep) {
+    wakeFromSleep = false
+    const settleDelay = 5000
+    log(chalk.yellow(`Reconnecting in ${(settleDelay / 1000).toFixed(1)}s (network settle after wake)...`))
+    setTimeout(connect, settleDelay)
+    return
+  }
+
   // Faster reconnect during graceful shutdown (500ms base) vs crash (2s base)
   const baseDelay = gracefulDisconnect ? 500 : 2000
   const delay = Math.min(baseDelay * Math.pow(1.5, reconnectAttempts - 1), MAX_RECONNECT_DELAY_MS)
@@ -1986,8 +2013,21 @@ function connectLocalDevice() {
 
     // Heartbeat: ping + pong timeout detection
     stopDeviceHeartbeat()
+    let deviceLastPingTime = Date.now()
     devicePingTimer = setInterval(() => {
       if (dws.readyState !== WebSocket.OPEN) { stopDeviceHeartbeat(); return }
+      const now = Date.now()
+      const elapsed = now - deviceLastPingTime
+      deviceLastPingTime = now
+
+      // Sleep detection: skip stale timeout after system wake
+      if (elapsed > DEVICE_PING_INTERVAL_MS * 3) {
+        log(chalk.yellow(`[device] System wake detected (${(elapsed / 1000).toFixed(0)}s gap) — terminating stale connection`))
+        stopDeviceHeartbeat()
+        try { dws.terminate() } catch { /* ignore */ }
+        return
+      }
+
       if (!deviceIsAlive) {
         log(chalk.red('[device] Heartbeat timeout — no pong received, forcing reconnect'))
         stopDeviceHeartbeat()
