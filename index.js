@@ -1226,11 +1226,23 @@ async function handleMessage(message) {
 
             const toolState = activeToolsByIndex.get(blockIndex)
             if (toolState?.toolUseId) {
+              // For long-running subagent tools (Task, Agent, spawn_task_session),
+              // don't emit tool_end here — content_block_stop only means the
+              // tool_use INPUT finished streaming, not that the subtask completed.
+              // For all other tools, content_block_stop IS the right place to mark
+              // completion because tool_result events may not arrive in stream-json.
+              const SUBAGENT_TOOLS = new Set(['Task', 'task', 'Agent', 'agent', 'spawn_task_session', 'batch_spawn_task_sessions'])
+              const toolName = toolState.toolName || ''
+              const baseName = toolName.includes('__') ? toolName.split('__').pop() : toolName
+              if (SUBAGENT_TOOLS.has(baseName)) {
+                activeToolsByIndex.delete(blockIndex)
+                return
+              }
               emitToolEnd({
                 toolUseId: toolState.toolUseId,
                 toolName: toolState.toolName,
                 input: toolState.input,
-                timestamp: now,
+                timestamp: Date.now(),
               })
               activeToolsByIndex.delete(blockIndex)
               return
