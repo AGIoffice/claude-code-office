@@ -1132,6 +1132,23 @@ async function handleMessage(message) {
 
         // Tool / thinking block starts
         if (streamEvent?.type === 'content_block_start') {
+          // Flush any pending subagent tools — if a new content block is starting,
+          // it means the assistant is continuing after tool execution, so any
+          // deferred subagent tools (Task, Agent, etc.) must have completed.
+          // tool_result user messages may not appear in stream-json output,
+          // so this is the reliable fallback to mark subagent tools as done.
+          for (const [idx, toolState] of activeToolsByIndex) {
+            if (toolState?.toolUseId && !finalizedToolIds.has(toolState.toolUseId)) {
+              emitToolEnd({
+                toolUseId: toolState.toolUseId,
+                toolName: toolState.toolName,
+                input: toolState.input,
+                timestamp: Date.now(),
+              })
+              activeToolsByIndex.delete(idx)
+            }
+          }
+
           const block = streamEvent.content_block
           if (block?.type === 'thinking' || block?.type === 'redacted_thinking') {
             const thinkingId = block.id || `thinking-${now}-${Math.random().toString(36).slice(2, 8)}`
@@ -1235,7 +1252,10 @@ async function handleMessage(message) {
               const toolName = toolState.toolName || ''
               const baseName = toolName.includes('__') ? toolName.split('__').pop() : toolName
               if (SUBAGENT_TOOLS.has(baseName)) {
-                activeToolsByIndex.delete(blockIndex)
+                // Don't emit tool_end here (content_block_stop only means input finished streaming).
+                // Keep the tool in activeToolsByIndex so it gets flushed when the next
+                // content_block_start arrives (lines above), which reliably signals
+                // the subtask has completed and the assistant is continuing.
                 return
               }
               emitToolEnd({
