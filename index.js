@@ -507,6 +507,7 @@ function formatHistoryForPrompt(messages) {
 let cachedSystemPrompt = null
 let mcpConfigPath = null
 let vncBridge = null  // { url, port, stop } — auto-started VNC bridge for Computer tab
+let vncLiveviewTimer = null  // periodic re-emission of device:liveview
 
 /**
  * Build the system prompt by fetching from Chat Bridge.
@@ -1910,6 +1911,15 @@ function connect() {
     } else if (vncBridge) {
       // Reconnect: re-emit existing bridge URL
       emitDeviceLiveView(vncBridge.url)
+    }
+
+    // Re-emit device:liveview periodically — the frontend workspace WebSocket
+    // may not be connected when the initial event fires (user hasn't opened
+    // the dialog yet). Re-emitting ensures the Computer tab picks it up.
+    if (vncBridge && !vncLiveviewTimer) {
+      vncLiveviewTimer = setInterval(() => {
+        if (vncBridge) emitDeviceLiveView(vncBridge.url)
+      }, 30_000)
     }
 
     // Banner — show clock-in card once, reconnect banner on subsequent connects
