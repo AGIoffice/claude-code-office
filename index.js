@@ -107,6 +107,16 @@ const argv = yargs(hideBin(process.argv))
     describe: 'noVNC URL for local screen sharing in Workspace Panel (or set NOVNC_URL env)',
     default: process.env.NOVNC_URL || undefined,
   })
+  .option('vnc-password', {
+    type: 'string',
+    describe: 'Password for macOS Screen Sharing VNC server (or set VNC_PASSWORD env)',
+    default: process.env.VNC_PASSWORD || '',
+  })
+  .option('no-vnc', {
+    type: 'boolean',
+    describe: 'Disable automatic VNC bridge (skip Screen Sharing detection)',
+    default: false,
+  })
   .option('cli-command', {
     type: 'string',
     describe: 'Override the CLI binary (e.g. /usr/local/bin/claude)',
@@ -496,6 +506,7 @@ function formatHistoryForPrompt(messages) {
 // Built on connect, cached for the lifetime of the connection.
 let cachedSystemPrompt = null
 let mcpConfigPath = null
+let vncBridge = null  // { url, port, stop } — auto-started VNC bridge for Computer tab
 
 /**
  * Build the system prompt by fetching from Chat Bridge.
@@ -755,12 +766,69 @@ function sendHostMeta(ws) {
 }
 
 /**
+ * Handle host commands (deviceNavigate, refreshAgentOwnedCredentials, etc.)
+ * These are sent by Chat Bridge via sendHostCommand() and require a typed response.
+ */
+async function handleHostCommand(message) {
+  const { commandType, commandId, payload = {} } = message
+  const ws = wsRef
+  const respond = (result) => {
+    if (ws?.readyState === WebSocket.OPEN) {
+      ws.send(JSON.stringify({ type: 'result', commandId, ...result }))
+    }
+  }
+
+  switch (commandType) {
+    case 'deviceNavigate': {
+      const { url } = payload
+      log(chalk.cyan(`[host-cmd] deviceNavigate → ${url}`))
+
+      // If VNC bridge is running, the desktop is already visible in the Computer tab.
+      // Open the URL in the user's default browser so it appears on the VNC stream.
+      if (url) {
+        try {
+          const openMod = await import('open')
+          const openFn = openMod.default || openMod
+          await openFn(url)
+          log(chalk.green(`[host-cmd] Opened ${url} in default browser`))
+        } catch (e) {
+          log(chalk.yellow(`[host-cmd] Failed to open URL: ${e.message}`))
+        }
+      }
+
+      // Ensure the VNC bridge liveview is emitted (in case it wasn't yet)
+      if (vncBridge) {
+        emitDeviceLiveView(vncBridge.url)
+      }
+
+      respond({ success: true, message: 'URL opened in local browser' })
+      break
+    }
+
+    case 'refreshAgentOwnedCredentials': {
+      log(chalk.cyan('[host-cmd] refreshAgentOwnedCredentials — no-op on local'))
+      respond({ success: true })
+      break
+    }
+
+    default:
+      log(chalk.yellow(`[host-cmd] Unknown commandType: ${commandType}`))
+      respond({ success: false, message: `Unknown command: ${commandType}` })
+  }
+}
+
+/**
  * Handle an incoming message from manager-service.
  * For command/userMessage: spawn `claude -p` with stream-json output,
  * parse the NDJSON stream, and emit streaming events back to the manager.
  */
 async function handleMessage(message) {
   const { type } = message
+
+  // ── Host commands (from Chat Bridge sendHostCommand) ─────────────────
+  if (type === 'command' && message.commandType) {
+    return handleHostCommand(message)
+  }
 
   if (type === 'command' || type === 'userMessage') {
     // Normalize
@@ -1256,6 +1324,18 @@ async function handleMessage(message) {
                 // Keep the tool in activeToolsByIndex so it gets flushed when the next
                 // content_block_start arrives (lines above), which reliably signals
                 // the subtask has completed and the assistant is continuing.
+                //
+                // Re-emit tool_start with the accumulated input so the frontend
+                // can display the description/prompt while the subagent runs.
+                // The initial tool_start had input={} because JSON wasn't streamed yet.
+                if (toolState.input && Object.keys(toolState.input).length > 0) {
+                  emitToolStart({
+                    toolUseId: toolState.toolUseId,
+                    toolName: toolState.toolName,
+                    input: toolState.input,
+                    timestamp: now,
+                  })
+                }
                 return
               }
               emitToolEnd({
@@ -1808,9 +1888,29 @@ function connect() {
       if (mcpRegistered) mcpConfigPath = 'registered'  // flag to skip re-registration
     }
 
-    // Emit local screen sharing if noVNC URL is configured
-    const novncUrl = argv['novnc-url'] || process.env.NOVNC_URL
-    if (novncUrl) emitDeviceLiveView(novncUrl)
+    // ── Local screen sharing (macOS VNC → noVNC in Computer tab) ──────────
+    // Priority: 1) explicit --novnc-url  2) auto-detect macOS Screen Sharing
+    const explicitNovnc = argv['novnc-url'] || process.env.NOVNC_URL
+    if (explicitNovnc) {
+      emitDeviceLiveView(explicitNovnc)
+    } else if (!argv['no-vnc'] && !vncBridge) {
+      try {
+        const { startVncBridge } = await import('./vnc-bridge.js')
+        const bridge = await startVncBridge({
+          password: argv['vnc-password'] || process.env.VNC_PASSWORD || '',
+          log,
+        })
+        vncBridge = bridge
+        log(chalk.green(`[screen] VNC bridge started on port ${bridge.port}`))
+        emitDeviceLiveView(bridge.url)
+      } catch (err) {
+        // Not an error — just means Screen Sharing is off
+        log(chalk.gray(`[screen] VNC auto-detect: ${err.message}`))
+      }
+    } else if (vncBridge) {
+      // Reconnect: re-emit existing bridge URL
+      emitDeviceLiveView(vncBridge.url)
+    }
 
     // Banner — show clock-in card once, reconnect banner on subsequent connects
     if (!hasShownClockInBanner) {
@@ -1891,6 +1991,19 @@ function connect() {
       try { entry?.child?.kill('SIGTERM') } catch { /* ignore */ }
     }
     activeChildren.clear()
+
+    // Agent fired — clear session cache and exit cleanly (no reconnect)
+    if (code === 4410) {
+      console.log('')
+      console.log(chalk.red.bold('  Agent has been removed from the office.'))
+      console.log(chalk.yellow('  Run "npx @office-xyz/claude-code" to join a new office.'))
+      console.log('')
+      import('./onboarding.js')
+        .then(m => m.clearSession())
+        .catch(() => {})
+        .finally(() => process.exit(0))
+      return
+    }
 
     // Auth rejection — try to re-hire once to get a fresh token before giving up
     if (code === 1008) {

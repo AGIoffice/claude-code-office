@@ -582,6 +582,7 @@ async function selectOrHireAgent(officeId, sessionToken) {
       provider: 'claude-code',
       roleId,
       roleCategory,
+      roleLabel,
     }, sessionToken)
 
     spinner.succeed(`Agent ready: ${chalk.bold(result.agentHandle)} ${chalk.dim(`(${roleLabel})`)}${result.seat ? chalk.dim(` · seat: ${result.seat}`) : ''}`)
@@ -642,6 +643,7 @@ export async function runOnboarding() {
               provider: 'claude-code',
               roleId: cached.lastAgent.roleId,
               roleCategory: cached.lastAgent.roleCategory,
+              roleLabel: cached.lastAgent.roleLabel,
             }, cached.sessionToken)
 
             if (!result.connectionToken) {
@@ -712,6 +714,7 @@ export async function runOnboarding() {
       seat: hired.seat,
       roleId: hired.roleId,
       roleCategory: hired.roleCategory,
+      roleLabel: hired.roleLabel,
     },
   })
 

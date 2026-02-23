@@ -12,6 +12,7 @@
     "index.js",
     "onboarding.js",
     "adam-frames.js",
+    "vnc-bridge.js",
     "mcp-server-lite.cjs",
     "README.md",
     "LICENSE",
