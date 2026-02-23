@@ -724,7 +724,7 @@ async function emitDeviceLiveView(noVncUrl) {
       signal: AbortSignal.timeout(5000),
     })
     if (resp.ok) {
-      log(chalk.green(`[screen] Emitted device:liveview → ${noVncUrl.substring(0, 60)}`))
+      log(chalk.green(`[screen] Emitted device:liveview → ${noVncUrl.replace(/password=[^&]+/, 'password=***')}`))
     } else {
       log(chalk.yellow(`[screen] device:liveview HTTP ${resp.status}`))
     }
