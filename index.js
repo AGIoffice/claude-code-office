@@ -1859,9 +1859,9 @@ function connect() {
     // the fresh token immediately after ws.open fires
     const tokenResetTimer = setTimeout(() => { tokenRetryAttempted = false }, 10_000)
     ws.once('close', () => clearTimeout(tokenResetTimer))
-    isAlive = true
+    missedPongs = 0
 
-    // Heartbeat: ping + pong timeout detection (matches cloud managerHostProxy pattern)
+    // Heartbeat: ping + missed-pong counter (matches server-side CLIENT_PING_INTERVAL_MS / CLIENT_MAX_MISSED_PONGS)
     let lastPingTime = Date.now()
     pingTimer = setInterval(() => {
       if (ws.readyState !== WebSocket.OPEN) { stopHeartbeat(); return }
@@ -1880,17 +1880,17 @@ function connect() {
         return
       }
 
-      if (!isAlive) {
-        log(chalk.red('Heartbeat timeout — no pong received, forcing reconnect'))
+      missedPongs++
+      if (missedPongs > MAX_MISSED_PONGS) {
+        log(chalk.red(`Heartbeat timeout — ${missedPongs} missed pongs (>${MAX_MISSED_PONGS}), forcing reconnect`))
         stopHeartbeat()
         try { ws.terminate() } catch { /* ignore */ }
         return
       }
-      isAlive = false
       try { ws.ping() } catch { /* ignore */ }
     }, PING_INTERVAL_MS)
 
-    ws.on('pong', () => { isAlive = true })
+    ws.on('pong', () => { missedPongs = 0 })
 
     sendHostMeta(ws)
 
