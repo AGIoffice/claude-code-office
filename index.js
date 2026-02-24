@@ -21,6 +21,7 @@ import { promisify } from 'util'
 const execAsync = promisify(execCb)
 import { createInterface } from 'readline'
 import { writeFileSync, readFileSync, mkdtempSync, mkdirSync, unlinkSync } from 'fs'
+import crypto from 'crypto'
 import path from 'path'
 import os from 'os'
 import { fileURLToPath } from 'url'
@@ -939,11 +940,19 @@ async function handleMessage(message) {
     // Resume conversation if we have a Claude session_id for this VO session
     const claudeSessionId = sessionId ? sessionMap.get(sessionId) : null
     const attemptedResume = !!(claudeSessionId && providerConfig.resumeFlag)
+    let preAssignedSessionId = null
     if (claudeSessionId && providerConfig.resumeFlag) {
       args.push(providerConfig.resumeFlag, claudeSessionId)
       log(chalk.green(`[session] Resuming: ${sessionId} → ${claudeSessionId}`))
-    } else if (sessionId) {
-      log(chalk.yellow(`[session] No resume binding for ${sessionId} (map size: ${sessionMap.size})`))
+    } else if (sessionId && providerConfig.resumeFlag) {
+      // No existing binding — this is a NEW session. Pre-assign a UUID so we can
+      // persist the binding immediately. If the process gets killed (SIGTERM) before
+      // emitting a result event, we still have the session_id for --resume next time.
+      preAssignedSessionId = crypto.randomUUID()
+      args.push('--session-id', preAssignedSessionId)
+      sessionMap.set(sessionId, preAssignedSessionId)
+      persistSessionMap()
+      log(chalk.green(`[session] Pre-assigned: ${sessionId} → ${preAssignedSessionId}`))
     }
 
     // ── History injection fallback ──────────────────────────────────────────
@@ -1559,6 +1568,14 @@ async function handleMessage(message) {
             log(chalk.yellow(`[session-retry] History fetch failed (continuing without): ${err.message}`))
           }
         }
+        // Pre-assign a new session ID for the retry so interrupt won't lose it
+        if (sessionId && providerConfig.resumeFlag) {
+          const retrySessionUUID = crypto.randomUUID()
+          retryArgs.push('--session-id', retrySessionUUID)
+          sessionMap.set(sessionId, retrySessionUUID)
+          persistSessionMap()
+          log(chalk.green(`[session-retry] Pre-assigned: ${sessionId} → ${retrySessionUUID}`))
+        }
         // Spawn fresh without --resume (with history context if available)
         const childEnvRetry = { ...process.env }
         delete childEnvRetry.ANTHROPIC_API_KEY
@@ -1729,6 +1746,30 @@ async function handleMessage(message) {
     return
   }
 
+  // ── Stop command: frontend "Stop" button / Esc key ──────────────────────
+  // Sent via POST /queue/stop → chat-bridge → manager WS → here.
+  // Kill the active CLI process for this session so it stops consuming
+  // resources and doesn't leak stale streaming output to the frontend.
+  if (type === 'stopCommand') {
+    const sessionId = message.sessionId || null
+    const prev = sessionId ? activeChildren.get(sessionId) : null
+    if (prev?.child) {
+      log(chalk.yellow(`[${sessionId}] Stop command — killing active process`))
+      sendJSON({
+        type: 'streaming.aborted',
+        sessionId,
+        commandId: prev.commandId,
+        reason: 'user-stop',
+        abortedAt: new Date().toISOString(),
+      })
+      try { prev.child.kill('SIGTERM') } catch { /* ignore */ }
+      activeChildren.delete(sessionId)
+    } else {
+      log(chalk.dim(`[stopCommand] No active process for session ${sessionId || '(none)'}`))
+    }
+    return
+  }
+
   log(chalk.gray(`Ignoring message type: ${type}`))
 }
 
@@ -1801,15 +1842,13 @@ function connect() {
   const ws = new WebSocket(managerUrl.href)
   wsRef = ws
 
-  const PING_INTERVAL_MS = 10_000
-  const PONG_TIMEOUT_MS = 8_000   // must be < PING_INTERVAL_MS
+  const PING_INTERVAL_MS = 25_000   // matches server-side CLIENT_PING_INTERVAL_MS
+  const MAX_MISSED_PONGS = 3        // tolerate up to 3 missed pongs (75s) before terminating
   let pingTimer = null
-  let pongTimer = null
-  let isAlive = false
+  let missedPongs = 0
 
   const stopHeartbeat = () => {
     if (pingTimer) { clearInterval(pingTimer); pingTimer = null }
-    if (pongTimer) { clearTimeout(pongTimer); pongTimer = null }
   }
 
   ws.on('open', async () => {
