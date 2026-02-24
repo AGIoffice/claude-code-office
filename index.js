@@ -1856,8 +1856,8 @@ function connect() {
   const ws = new WebSocket(managerUrl.href)
   wsRef = ws
 
-  const PING_INTERVAL_MS = 15_000   // matches server-side CLIENT_PING_INTERVAL_MS
-  const MAX_MISSED_PONGS = 2        // tolerate up to 2 missed pongs (30s) before terminating
+  const PING_INTERVAL_MS = 25_000   // matches server-side CLIENT_PING_INTERVAL_MS
+  const MAX_MISSED_PONGS = 3        // tolerate up to 3 missed pongs (75s) before terminating
   let pingTimer = null
   let missedPongs = 0
 
