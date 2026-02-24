@@ -1637,6 +1637,20 @@ async function handleMessage(message) {
         completedAt: new Date().toISOString(),
       })
 
+      // HTTP fallback: POST to chat-bridge to guarantee streaming.completed delivery
+      // even if the WS proxy connection is half-open and silently dropping messages.
+      // The endpoint is idempotent (deduplicates by commandId).
+      try {
+        const proto = managerUrl.protocol === 'wss:' ? 'https' : 'http'
+        const httpBase = process.env.CHAT_BRIDGE_HTTP_URL || process.env.CHAT_BRIDGE_URL || `${proto}://${managerUrl.host}`
+        fetch(`${httpBase}/api/streaming-complete`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ sessionId, commandId, agentHandle: argv.agent, status: 'completed' }),
+          signal: AbortSignal.timeout(5000),
+        }).catch(() => {}) // fire-and-forget
+      } catch { /* ignore */ }
+
       // Send final result
       const contentBlocks = []
       if (completedThinkingBlocks.length > 0) {
@@ -1842,8 +1856,8 @@ function connect() {
   const ws = new WebSocket(managerUrl.href)
   wsRef = ws
 
-  const PING_INTERVAL_MS = 25_000   // matches server-side CLIENT_PING_INTERVAL_MS
-  const MAX_MISSED_PONGS = 3        // tolerate up to 3 missed pongs (75s) before terminating
+  const PING_INTERVAL_MS = 15_000   // matches server-side CLIENT_PING_INTERVAL_MS
+  const MAX_MISSED_PONGS = 2        // tolerate up to 2 missed pongs (30s) before terminating
   let pingTimer = null
   let missedPongs = 0
 
