@@ -364,6 +364,10 @@ function persistSessionMap() {
 // use different sessionIds and can run in parallel without killing each other.
 const activeChildren = new Map()
 
+// Track sessions that just had a kill-and-replace so we can ignore stale stopCommands.
+// Key: sessionId, Value: replacedCommandId. Cleared when the new command produces output.
+const sessionJustReplaced = new Map()
+
 // ── History Fetch from Chat Bridge (fallback when --resume unavailable) ──────
 // Cloud agents use fetchHistoryFromChatBridge to restore context after restart.
 // Local-host now does the same: when --resume is not available, fetch conversation
@@ -929,6 +933,9 @@ async function handleMessage(message) {
       })
       try { prev.child.kill('SIGTERM') } catch { /* ignore */ }
       activeChildren.delete(sessionId)
+      // Mark this session as just-replaced so we can ignore the stale stopCommand
+      // that the frontend may send for the old command (arrives after the new one starts).
+      if (sessionId) sessionJustReplaced.set(sessionId, prev.commandId)
     }
 
     // Build CLI args
@@ -1143,6 +1150,11 @@ async function handleMessage(message) {
 
     const lineHandler = (line) => {
       if (!line.trim()) return
+      // New command is producing output — clear the replace flag so future
+      // user-initiated stops (Esc / Stop button) work normally.
+      if (sessionId && sessionJustReplaced.has(sessionId)) {
+        sessionJustReplaced.delete(sessionId)
+      }
       try {
         const event = JSON.parse(line)
         const streamEvent = event?.type === 'stream_event' ? event.event : null
@@ -1651,6 +1663,21 @@ async function handleMessage(message) {
         }).catch(() => {}) // fire-and-forget
       } catch { /* ignore */ }
 
+      // ── Anti-hallucination: append ground-truth tool execution footer ──
+      // The LLM may claim it performed file operations without actually calling
+      // the tool (hallucination).  By appending a factual "[Tools executed: ...]"
+      // line we give both the user and the model's own next-turn context a
+      // reliable signal of what really happened.
+      if (fullText && fullText.trim()) {
+        const toolNames = completedToolActions
+          .map(a => a.toolName)
+          .filter(Boolean)
+        const footer = toolNames.length > 0
+          ? `\n\n[Tools executed: ${toolNames.join(', ')}]`
+          : '\n\n[Tools executed: none]'
+        fullText = fullText.trimEnd() + footer
+      }
+
       // Send final result
       const contentBlocks = []
       if (completedThinkingBlocks.length > 0) {
@@ -1768,6 +1795,14 @@ async function handleMessage(message) {
     const sessionId = message.sessionId || null
     const prev = sessionId ? activeChildren.get(sessionId) : null
     if (prev?.child) {
+      // If this session just had a kill-and-replace, the stopCommand is stale —
+      // it was meant for the old command which is already dead. Ignore it so
+      // we don't accidentally kill the new command that just started.
+      if (sessionId && sessionJustReplaced.has(sessionId)) {
+        log(chalk.dim(`[stopCommand] Ignoring stale stop for session ${sessionId} — command was already replaced`))
+        sessionJustReplaced.delete(sessionId)
+        return
+      }
       log(chalk.yellow(`[${sessionId}] Stop command — killing active process`))
       sendJSON({
         type: 'streaming.aborted',
@@ -1779,6 +1814,8 @@ async function handleMessage(message) {
       try { prev.child.kill('SIGTERM') } catch { /* ignore */ }
       activeChildren.delete(sessionId)
     } else {
+      // No active process — also clean up replace flag if present
+      if (sessionId) sessionJustReplaced.delete(sessionId)
       log(chalk.dim(`[stopCommand] No active process for session ${sessionId || '(none)'}`))
     }
     return
