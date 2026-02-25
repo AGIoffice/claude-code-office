@@ -704,7 +704,7 @@ function sendJSON(payload) {
  * Uses the per-agent /api/workspace/event endpoint — isolation is
  * guaranteed by broadcastWorkspaceEvent(agentId).
  */
-async function emitDeviceLiveView(noVncUrl) {
+async function emitDeviceLiveView(noVncUrl, relayUrl) {
   if (!noVncUrl || !hostId || hostId === 'pending') return
   const baseUrl =
     process.env.CHAT_BRIDGE_HTTP_URL ||
@@ -712,24 +712,30 @@ async function emitDeviceLiveView(noVncUrl) {
     process.env.CHAT_BRIDGE_BASE_URL ||
     'https://chatbridge.aladdinagi.xyz'
   try {
+    const payload = {
+      sessionId: `local-screen-${hostId}`,
+      noVncUrl,
+      deviceType: 'computer',
+      width: 1920,
+      height: 1080,
+    }
+    // Include relay info for cross-device streaming
+    if (relayUrl) {
+      payload.streamType = 'relay'
+      payload.relayUrl = relayUrl
+    }
     const resp = await fetch(`${baseUrl}/api/workspace/event`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         agentId: hostId,
         type: 'device:liveview',
-        payload: {
-          sessionId: `local-screen-${hostId}`,
-          noVncUrl,
-          deviceType: 'computer',
-          width: 1920,
-          height: 1080,
-        },
+        payload,
       }),
       signal: AbortSignal.timeout(5000),
     })
     if (resp.ok) {
-      log(chalk.green(`[screen] Emitted device:liveview → ${noVncUrl.replace(/password=[^&]+/, 'password=***')}`))
+      log(chalk.green(`[screen] Emitted device:liveview → ${noVncUrl.replace(/password=[^&]+/, 'password=***')}${relayUrl ? ' (relay: ' + relayUrl + ')' : ''}`))
     } else {
       log(chalk.yellow(`[screen] device:liveview HTTP ${resp.status}`))
     }
@@ -1966,26 +1972,32 @@ function connect() {
 
     // ── Local screen sharing (macOS VNC → noVNC in Computer tab) ──────────
     // Priority: 1) explicit --novnc-url  2) auto-detect macOS Screen Sharing
+    // Construct relay URL for cross-device streaming via chatbridge
+    const chatBridgeWsBase = (process.env.CHAT_BRIDGE_URL || 'wss://chatbridge.aladdinagi.xyz').replace(/^http/, 'ws')
+    const screenRelayUrl = `${chatBridgeWsBase}/ws/screen/${encodeURIComponent(hostId)}`
+
     const explicitNovnc = argv['novnc-url'] || process.env.NOVNC_URL
     if (explicitNovnc) {
-      emitDeviceLiveView(explicitNovnc)
+      emitDeviceLiveView(explicitNovnc, screenRelayUrl)
     } else if (!argv['no-vnc'] && !vncBridge) {
       try {
         const { startVncBridge } = await import('./vnc-bridge.js')
         const bridge = await startVncBridge({
           password: argv['vnc-password'] || process.env.VNC_PASSWORD || '',
           log,
+          relayUrl: screenRelayUrl,
+          connectionToken: argv.token || '',
         })
         vncBridge = bridge
         log(chalk.green(`[screen] VNC bridge started on port ${bridge.port}`))
-        emitDeviceLiveView(bridge.url)
+        emitDeviceLiveView(bridge.url, screenRelayUrl)
       } catch (err) {
         // Not an error — just means Screen Sharing is off
         log(chalk.gray(`[screen] VNC auto-detect: ${err.message}`))
       }
     } else if (vncBridge) {
       // Reconnect: re-emit existing bridge URL
-      emitDeviceLiveView(vncBridge.url)
+      emitDeviceLiveView(vncBridge.url, screenRelayUrl)
     }
 
     // Re-emit device:liveview periodically — the frontend workspace WebSocket
@@ -1993,7 +2005,7 @@ function connect() {
     // the dialog yet). Re-emitting ensures the Computer tab picks it up.
     if (vncBridge && !vncLiveviewTimer) {
       vncLiveviewTimer = setInterval(() => {
-        if (vncBridge) emitDeviceLiveView(vncBridge.url)
+        if (vncBridge) emitDeviceLiveView(vncBridge.url, screenRelayUrl)
       }, 30_000)
     }
 
