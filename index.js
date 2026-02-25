@@ -1663,21 +1663,6 @@ async function handleMessage(message) {
         }).catch(() => {}) // fire-and-forget
       } catch { /* ignore */ }
 
-      // ── Anti-hallucination: append ground-truth tool execution footer ──
-      // The LLM may claim it performed file operations without actually calling
-      // the tool (hallucination).  By appending a factual "[Tools executed: ...]"
-      // line we give both the user and the model's own next-turn context a
-      // reliable signal of what really happened.
-      if (fullText && fullText.trim()) {
-        const toolNames = completedToolActions
-          .map(a => a.toolName)
-          .filter(Boolean)
-        const footer = toolNames.length > 0
-          ? `\n\n[Tools executed: ${toolNames.join(', ')}]`
-          : '\n\n[Tools executed: none]'
-        fullText = fullText.trimEnd() + footer
-      }
-
       // Send final result
       const contentBlocks = []
       if (completedThinkingBlocks.length > 0) {
