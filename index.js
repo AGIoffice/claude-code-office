@@ -1012,8 +1012,10 @@ async function handleMessage(message) {
     // MCP: no --mcp-config flag needed. The VO MCP server is registered via
     // `claude mcp add` during clock-in, so `claude -p` auto-loads it.
     // See: https://code.claude.com/docs/en/mcp
-    // User message as last positional argument (raw, no escaping needed with shell: false)
-    args.push(text)
+    // User message as last positional argument.
+    // '--' stops the arg parser from treating messages starting with '-' as flags
+    // (e.g. "-用户授权 OAuth..." was parsed as unknown option, crashing the CLI).
+    args.push('--', text)
     // Pre-build args without --resume for use in retry (remove resumeFlag + its value).
     // If resume fails (expired session → exit code 1), we retry with these args.
     const argsWithoutResume = attemptedResume
@@ -1072,13 +1074,16 @@ async function handleMessage(message) {
       if (sessionId) {
         activeChildren.set(sessionId, { child, commandId })
         // Always protect freshly-spawned processes from stale stop commands.
-        // Without this, a "stop all" that was in-flight before this message
-        // arrives 1-2ms later and kills the brand-new process, losing the
-        // user's message. The flag is cleared on first output (lineHandler)
-        // or after the first ignored stop, so deliberate stops still work.
-        if (!sessionJustReplaced.has(sessionId)) {
-          sessionJustReplaced.set(sessionId, commandId)
-        }
+        // Without this, a "stop all" or the frontend's pre-message stopCommand
+        // (which arrives 1-2s later via HTTP→chat-bridge→sendToHost→manager→local-host)
+        // kills the brand-new process, losing the user's message.
+        // Cleared when: (1) a stale stop is ignored, or (2) 5s TTL expires.
+        sessionJustReplaced.set(sessionId, commandId)
+        setTimeout(() => {
+          if (sessionJustReplaced.has(sessionId) && sessionJustReplaced.get(sessionId) === commandId) {
+            sessionJustReplaced.delete(sessionId)
+          }
+        }, 5000)
       }
     } catch (err) {
       log(chalk.red(`Failed to spawn CLI: ${err.message}`))
@@ -1166,11 +1171,12 @@ async function handleMessage(message) {
 
     const lineHandler = (line) => {
       if (!line.trim()) return
-      // New command is producing output — clear the replace flag so future
-      // user-initiated stops (Esc / Stop button) work normally.
-      if (sessionId && sessionJustReplaced.has(sessionId)) {
-        sessionJustReplaced.delete(sessionId)
-      }
+      // NOTE: We no longer clear sessionJustReplaced on first output.
+      // The flag is cleared ONLY when a stale stop is ignored (stopCommand handler)
+      // or after a 5-second TTL (set below at spawn time). This prevents the
+      // frontend's pre-message stopCommand (which arrives 1-2s after spawn via
+      // HTTP → chat-bridge → sendToHost → manager-service → local-host) from
+      // killing the freshly-spawned process after its first output clears the flag.
       try {
         const event = JSON.parse(line)
         const streamEvent = event?.type === 'stream_event' ? event.event : null
@@ -1610,9 +1616,12 @@ async function handleMessage(message) {
         child = spawn(cmd, retryArgs, { cwd: workspace, env: childEnvRetry, stdio: ['ignore', 'pipe', 'pipe'], shell: false })
         if (sessionId) {
           activeChildren.set(sessionId, { child, commandId })
-          if (!sessionJustReplaced.has(sessionId)) {
-            sessionJustReplaced.set(sessionId, commandId)
-          }
+          sessionJustReplaced.set(sessionId, commandId)
+          setTimeout(() => {
+            if (sessionJustReplaced.has(sessionId) && sessionJustReplaced.get(sessionId) === commandId) {
+              sessionJustReplaced.delete(sessionId)
+            }
+          }, 5000)
         }
         log(chalk.blue(`[session-retry] Re-running: ${cmd} ${retryArgs.slice(0, 5).join(' ')}... [${retryArgs.length} args]`))
         // Rewire NDJSON parser + handlers onto the new child
