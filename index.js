@@ -1069,7 +1069,17 @@ async function handleMessage(message) {
         stdio: ['ignore', 'pipe', 'pipe'],
         shell: false,
       })
-      if (sessionId) activeChildren.set(sessionId, { child, commandId })
+      if (sessionId) {
+        activeChildren.set(sessionId, { child, commandId })
+        // Always protect freshly-spawned processes from stale stop commands.
+        // Without this, a "stop all" that was in-flight before this message
+        // arrives 1-2ms later and kills the brand-new process, losing the
+        // user's message. The flag is cleared on first output (lineHandler)
+        // or after the first ignored stop, so deliberate stops still work.
+        if (!sessionJustReplaced.has(sessionId)) {
+          sessionJustReplaced.set(sessionId, commandId)
+        }
+      }
     } catch (err) {
       log(chalk.red(`Failed to spawn CLI: ${err.message}`))
       sendJSON({ type: 'result', sessionId, commandId, stdout: '', stderr: `Failed to start ${argv.provider}: ${err.message}`, exitCode: 1 })
@@ -1598,7 +1608,12 @@ async function handleMessage(message) {
         const childEnvRetry = { ...process.env }
         delete childEnvRetry.ANTHROPIC_API_KEY
         child = spawn(cmd, retryArgs, { cwd: workspace, env: childEnvRetry, stdio: ['ignore', 'pipe', 'pipe'], shell: false })
-        if (sessionId) activeChildren.set(sessionId, { child, commandId })
+        if (sessionId) {
+          activeChildren.set(sessionId, { child, commandId })
+          if (!sessionJustReplaced.has(sessionId)) {
+            sessionJustReplaced.set(sessionId, commandId)
+          }
+        }
         log(chalk.blue(`[session-retry] Re-running: ${cmd} ${retryArgs.slice(0, 5).join(' ')}... [${retryArgs.length} args]`))
         // Rewire NDJSON parser + handlers onto the new child
         const rlRetry = createInterface({ input: child.stdout })
