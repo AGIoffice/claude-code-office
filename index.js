@@ -791,9 +791,11 @@ async function emitDeviceLiveView(noVncUrl, relayUrl) {
       width: 1920,
       height: 1080,
     }
-    // Include relay info for cross-device streaming
+    // Include relay as fallback for cross-device streaming.
+    // Default to 'iframe' (direct localhost WS) which has zero relay latency.
+    // Frontend should try direct first, fall back to relay if unreachable.
     if (relayUrl) {
-      payload.streamType = 'relay'
+      payload.streamType = 'iframe'
       payload.relayUrl = relayUrl
     }
     const resp = await fetch(`${baseUrl}/api/workspace/event`, {
