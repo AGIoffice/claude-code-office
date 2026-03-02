@@ -16,7 +16,7 @@ import { WebSocket } from 'ws'
 import chalk from 'chalk'
 import yargs from 'yargs'
 import { hideBin } from 'yargs/helpers'
-import { spawn, execSync, exec as execCb } from 'child_process'
+import { spawn, fork, execSync, exec as execCb } from 'child_process'
 import { promisify } from 'util'
 const execAsync = promisify(execCb)
 import { createInterface } from 'readline'
@@ -511,7 +511,8 @@ function formatHistoryForPrompt(messages) {
 // Built on connect, cached for the lifetime of the connection.
 let cachedSystemPrompt = null
 let mcpConfigPath = null
-let vncBridge = null  // { url, port, stop } — auto-started VNC bridge for Computer tab
+let vncBridge = null  // { url, port, stop, restart } — auto-started VNC bridge (forked process)
+let vncBridgeWorker = null  // child_process handle for the forked vnc-bridge worker
 let vncLiveviewTimer = null  // periodic re-emission of device:liveview
 
 /**
@@ -696,6 +697,77 @@ function sendJSON(payload) {
       pendingSendBuffer.push(JSON.stringify(payload))
     }
   }
+}
+
+/**
+ * Start VNC bridge in a forked child process.
+ * Returns { url, port, stop(), restart() } — same shape as startVncBridge()
+ * but the screencapture loop runs in its own process so it can't block the agent.
+ */
+function startVncBridgeForked(opts, screenRelayUrl) {
+  return new Promise((resolve, reject) => {
+    const workerPath = path.join(__dirname, 'vnc-bridge-worker.js')
+    const worker = fork(workerPath, [], { stdio: 'pipe' })
+    vncBridgeWorker = worker
+
+    // Forward worker stdout/stderr to our logger
+    worker.stdout?.on('data', (d) => log(d.toString().trimEnd()))
+    worker.stderr?.on('data', (d) => log(d.toString().trimEnd()))
+
+    let settled = false
+    const timeout = setTimeout(() => {
+      if (!settled) { settled = true; reject(new Error('VNC bridge worker timed out')) }
+    }, 15000)
+
+    worker.on('message', (msg) => {
+      if (msg.type === 'ready' && !settled) {
+        settled = true
+        clearTimeout(timeout)
+        const bridge = {
+          url: msg.url,
+          port: msg.port,
+          stop() {
+            try { worker.send({ type: 'stop' }) } catch {}
+          },
+          restart() {
+            try { worker.send({ type: 'restart', opts }) } catch {}
+          },
+        }
+        resolve(bridge)
+      } else if (msg.type === 'error' && !settled) {
+        settled = true
+        clearTimeout(timeout)
+        reject(new Error(msg.message))
+      } else if (msg.type === 'log') {
+        log(msg.message)
+      }
+    })
+
+    // Auto-respawn on unexpected exit
+    worker.on('exit', (code) => {
+      vncBridgeWorker = null
+      if (!settled) {
+        settled = true
+        clearTimeout(timeout)
+        reject(new Error(`VNC bridge worker exited with code ${code}`))
+        return
+      }
+      if (code !== 0) {
+        log(chalk.yellow(`[screen] VNC bridge worker exited (code ${code}), respawning in 5s...`))
+        setTimeout(() => {
+          startVncBridgeForked(opts, screenRelayUrl).then((bridge) => {
+            vncBridge = bridge
+            log(chalk.green(`[screen] VNC bridge respawned on port ${bridge.port}`))
+            emitDeviceLiveView(bridge.url, screenRelayUrl)
+          }).catch((err) => {
+            log(chalk.gray(`[screen] VNC bridge respawn failed: ${err.message}`))
+          })
+        }, 5000)
+      }
+    })
+
+    worker.send({ type: 'start', opts })
+  })
 }
 
 /**
@@ -1077,7 +1149,8 @@ async function handleMessage(message) {
         // Without this, a "stop all" or the frontend's pre-message stopCommand
         // (which arrives 1-2s later via HTTP→chat-bridge→sendToHost→manager→local-host)
         // kills the brand-new process, losing the user's message.
-        // Cleared when: (1) a stale stop is ignored, or (2) 5s TTL expires.
+        // Cleared ONLY by the 5s TTL below — NOT by the stopCommand handler,
+        // because multiple stale stops can arrive in the same tick.
         sessionJustReplaced.set(sessionId, commandId)
         setTimeout(() => {
           if (sessionJustReplaced.has(sessionId) && sessionJustReplaced.get(sessionId) === commandId) {
@@ -1172,11 +1245,9 @@ async function handleMessage(message) {
     const lineHandler = (line) => {
       if (!line.trim()) return
       // NOTE: We no longer clear sessionJustReplaced on first output.
-      // The flag is cleared ONLY when a stale stop is ignored (stopCommand handler)
-      // or after a 5-second TTL (set below at spawn time). This prevents the
-      // frontend's pre-message stopCommand (which arrives 1-2s after spawn via
-      // HTTP → chat-bridge → sendToHost → manager-service → local-host) from
-      // killing the freshly-spawned process after its first output clears the flag.
+      // The flag is cleared ONLY by its 5-second TTL (set at spawn time).
+      // The stopCommand handler no longer deletes it either, because multiple
+      // stale stops can arrive in the same tick and bypass the protection.
       try {
         const event = JSON.parse(line)
         const streamEvent = event?.type === 'stream_event' ? event.event : null
@@ -1815,7 +1886,10 @@ async function handleMessage(message) {
       // we don't accidentally kill the new command that just started.
       if (sessionId && sessionJustReplaced.has(sessionId)) {
         log(chalk.dim(`[stopCommand] Ignoring stale stop for session ${sessionId} — command was already replaced`))
-        sessionJustReplaced.delete(sessionId)
+        // Do NOT delete the flag here — multiple stale stopCommands can arrive in
+        // the same tick (frontend fire-and-forget + session close/reopen). Deleting
+        // after the first one lets subsequent stops kill the freshly-spawned process.
+        // The flag is cleaned up by its 5-second TTL (set at spawn time, line ~1082).
         return
       }
       log(chalk.yellow(`[${sessionId}] Stop command — killing active process`))
@@ -1829,8 +1903,9 @@ async function handleMessage(message) {
       try { prev.child.kill('SIGTERM') } catch { /* ignore */ }
       activeChildren.delete(sessionId)
     } else {
-      // No active process — also clean up replace flag if present
-      if (sessionId) sessionJustReplaced.delete(sessionId)
+      // No active process — let the TTL clean up the replace flag naturally.
+      // Don't delete it here: the process may still be spawning, or another
+      // stop in the same tick already killed it but more messages are queued.
       log(chalk.dim(`[stopCommand] No active process for session ${sessionId || '(none)'}`))
     }
     return
@@ -2005,15 +2080,14 @@ function connect() {
       emitDeviceLiveView(explicitNovnc, screenRelayUrl)
     } else if (!argv['no-vnc'] && !vncBridge) {
       try {
-        const { startVncBridge } = await import('./vnc-bridge.js')
-        const bridge = await startVncBridge({
+        const bridgeOpts = {
           password: argv['vnc-password'] || process.env.VNC_PASSWORD || '',
-          log,
           relayUrl: screenRelayUrl,
           connectionToken: argv.token || '',
-        })
+        }
+        const bridge = await startVncBridgeForked(bridgeOpts, screenRelayUrl)
         vncBridge = bridge
-        log(chalk.green(`[screen] VNC bridge started on port ${bridge.port}`))
+        log(chalk.green(`[screen] VNC bridge started on port ${bridge.port} (forked process)`))
         emitDeviceLiveView(bridge.url, screenRelayUrl)
       } catch (err) {
         // Not an error — just means Screen Sharing is off
