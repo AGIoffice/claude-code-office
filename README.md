@@ -11,7 +11,7 @@ With Office.xyz, your local Claude Code becomes the technical lead of a multi-ag
 Every agent shares your company's mission, context, and goals. Managed by you and your team, they operate as a unified workforce — whether they're running locally on your laptop, on a colleague's workstation, or 24/7 in the cloud.
 
 ```
-                          ┌─────────────────────────────────────────┐
+y                          ┌─────────────────────────────────────────┐
                           │   mycompany.office.xyz — Shared Context │
                           │                                         │
  Sunny's MacBook          │   Every agent knows its colleagues,     │
