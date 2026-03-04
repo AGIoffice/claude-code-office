@@ -1598,14 +1598,19 @@ async function handleMessage(message) {
 
     // stderr → log
     let isRateLimitError = false  // Track 429/rate-limit separately — binding should be preserved
+    let usageExceededMessage = ''  // Capture the human-readable usage message for frontend
     const stderrHandler = (chunk) => {
       const text = chunk.toString()
       if (text.trim()) {
         log(chalk.dim(`[stderr] ${text.trim().slice(0, 200)}`))
         // Detect temporary rate-limit / quota errors (429) — session is still valid
-        if (/API Error:\s*429|exceeded your current quota|rate.?limit|over.?capacity/i.test(text)) {
+        // Also matches Claude CLI's "out of extra usage" / "out of usage" messages
+        if (/API Error:\s*429|exceeded your current quota|rate.?limit|over.?capacity|out of.*usage/i.test(text)) {
           isRateLimitError = true
           isApiError = true  // Still an API error (skip poisoned-binding save), but won't clear existing
+          // Capture the usage message for forwarding to frontend
+          const usageMatch = text.match(/(?:You're |you are )?out of.*usage[^]*/i)
+          if (usageMatch) usageExceededMessage = text.trim()
         }
         // Detect permanent API/auth errors (403, 401, etc.)
         else if (/API Error:\s*4\d{2}|Failed to authenticate|forbidden|Request not allowed/i.test(text)) {
@@ -1727,9 +1732,10 @@ async function handleMessage(message) {
       // valid on Anthropic's side. Preserve the binding so --resume works when quota resets.
       // Also detect errors from response text (Claude CLI wraps API errors as text content)
       if (!isApiError && fullText) {
-        if (/API Error:\s*429|exceeded your current quota|rate.?limit|over.?capacity/i.test(fullText)) {
+        if (/API Error:\s*429|exceeded your current quota|rate.?limit|over.?capacity|out of.*usage/i.test(fullText)) {
           isRateLimitError = true
           isApiError = true
+          if (!usageExceededMessage) usageExceededMessage = fullText.trim()
         } else if (/API Error:\s*4\d{2}|Failed to authenticate|"type":"forbidden"/i.test(fullText)) {
           isApiError = true
         }
@@ -1817,11 +1823,18 @@ async function handleMessage(message) {
           })
         }
       }
-      if (fullText && fullText.trim()) {
+      // If usage exceeded and no fullText (message was only in stderr), inject it
+      // so the frontend shows the user why the agent stopped.
+      const displayText = (fullText && fullText.trim())
+        ? fullText.trim()
+        : usageExceededMessage
+          ? `⚠️ ${usageExceededMessage}`
+          : ''
+      if (displayText) {
         contentBlocks.push({
           type: 'text',
           id: `text-${Date.now()}`,
-          text: fullText.trim(),
+          text: displayText,
           _sortTs: Date.now(),
         })
       }
@@ -1833,7 +1846,7 @@ async function handleMessage(message) {
           type: 'result',
           sessionId,
           commandId,
-          stdout: fullText || '(No response)',
+          stdout: displayText || '(No response)',
           stderr: '',
           exitCode: code || 0,
           metadata: {
