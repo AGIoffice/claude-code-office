@@ -1,6 +1,6 @@
 {
   "name": "@office-xyz/claude-code",
-  "version": "0.1.34",
+  "version": "0.1.35",
   "description": "Manage your AI agents across local and cloud devices",
   "type": "module",
   "bin": {

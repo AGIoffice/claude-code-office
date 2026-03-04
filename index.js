@@ -372,7 +372,12 @@ const sessionJustReplaced = new Map()
 // Cloud agents use fetchHistoryFromChatBridge to restore context after restart.
 // Local-host now does the same: when --resume is not available, fetch conversation
 // history from Chat Bridge DB and inject it as system prompt context.
-const sessionHistorySynced = new Set()
+//
+// Tracks timestamp of last fetch per session to avoid repeated slow requests within
+// the same turn, while still allowing re-fetch on subsequent turns (e.g. after
+// resume failure → retry → next user message).
+const sessionHistoryLastFetched = new Map()  // sessionId → timestamp
+const HISTORY_REFETCH_COOLDOWN_MS = 30_000   // Don't re-fetch within 30s of last fetch
 
 /**
  * Parse a VO sessionId (agentId--userId--conversationId) into parts.
@@ -408,9 +413,11 @@ function isUUID(s) { return typeof s === 'string' && UUID_RE.test(s) }
  */
 async function fetchHistoryForPrompt(sessionId, metadata = {}) {
   if (!sessionId) return ''
-  // Only fetch once per session to avoid repeated slow requests
-  if (sessionHistorySynced.has(sessionId)) return ''
-  sessionHistorySynced.add(sessionId)
+  // Cooldown: don't re-fetch within 30s (same turn / rapid retry), but allow
+  // re-fetch on subsequent turns (e.g. after usage quota resets).
+  const lastFetched = sessionHistoryLastFetched.get(sessionId)
+  if (lastFetched && Date.now() - lastFetched < HISTORY_REFETCH_COOLDOWN_MS) return ''
+  sessionHistoryLastFetched.set(sessionId, Date.now())
 
   const chatBridgeUrl =
     process.env.CHAT_BRIDGE_HTTP_URL ||
@@ -1590,12 +1597,18 @@ async function handleMessage(message) {
     rl.on('line', lineHandler)
 
     // stderr → log
+    let isRateLimitError = false  // Track 429/rate-limit separately — binding should be preserved
     const stderrHandler = (chunk) => {
       const text = chunk.toString()
       if (text.trim()) {
         log(chalk.dim(`[stderr] ${text.trim().slice(0, 200)}`))
-        // Detect API/auth errors from stderr (e.g. "API Error: 403", "Failed to authenticate")
-        if (/API Error:\s*4\d{2}|Failed to authenticate|forbidden|Request not allowed/i.test(text)) {
+        // Detect temporary rate-limit / quota errors (429) — session is still valid
+        if (/API Error:\s*429|exceeded your current quota|rate.?limit|over.?capacity/i.test(text)) {
+          isRateLimitError = true
+          isApiError = true  // Still an API error (skip poisoned-binding save), but won't clear existing
+        }
+        // Detect permanent API/auth errors (403, 401, etc.)
+        else if (/API Error:\s*4\d{2}|Failed to authenticate|forbidden|Request not allowed/i.test(text)) {
           isApiError = true
         }
       }
@@ -1710,13 +1723,20 @@ async function handleMessage(message) {
       // IMPORTANT: Do NOT save bindings for failed sessions (API errors, auth failures).
       // Resuming a session that only contains an error message causes the next conversation
       // to appear as "new" since there's no meaningful context to resume.
+      // EXCEPTION: Rate-limit / quota errors (429) are TEMPORARY — the session is still
+      // valid on Anthropic's side. Preserve the binding so --resume works when quota resets.
       // Also detect errors from response text (Claude CLI wraps API errors as text content)
-      if (!isApiError && fullText && /API Error:\s*4\d{2}|Failed to authenticate|"type":"forbidden"/i.test(fullText)) {
-        isApiError = true
+      if (!isApiError && fullText) {
+        if (/API Error:\s*429|exceeded your current quota|rate.?limit|over.?capacity/i.test(fullText)) {
+          isRateLimitError = true
+          isApiError = true
+        } else if (/API Error:\s*4\d{2}|Failed to authenticate|"type":"forbidden"/i.test(fullText)) {
+          isApiError = true
+        }
       }
       if (resultSessionId && sessionId) {
-        if (isApiError) {
-          // Remove any existing binding for this session — it's poisoned by the error.
+        if (isApiError && !isRateLimitError) {
+          // Remove binding for permanent errors (auth failure, forbidden, etc.)
           // Don't use exit code alone: CLI might exit 0 after handling errors gracefully,
           // or non-zero from SIGTERM (when we kill a previous session for the same user).
           if (sessionMap.has(sessionId)) {
@@ -1726,6 +1746,10 @@ async function handleMessage(message) {
           } else {
             log(chalk.yellow(`[session] Skipped binding for ${sessionId} (apiError, code=${code})`))
           }
+        } else if (isRateLimitError) {
+          // 429 / quota exceeded: PRESERVE existing binding (session still valid on server)
+          // If we had a pre-assigned session, keep it; if we had an old binding, keep it.
+          log(chalk.yellow(`[session] Preserved binding for ${sessionId} (rate-limit/quota — session still valid)`))
         } else {
           sessionMap.set(sessionId, resultSessionId)
           persistSessionMap()
