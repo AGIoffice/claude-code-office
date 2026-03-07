@@ -20,7 +20,7 @@ import { spawn, fork, execSync, exec as execCb } from 'child_process'
 import { promisify } from 'util'
 const execAsync = promisify(execCb)
 import { createInterface } from 'readline'
-import { writeFileSync, readFileSync, mkdtempSync, mkdirSync, unlinkSync } from 'fs'
+import { writeFileSync, readFileSync, mkdtempSync, mkdirSync, unlinkSync, existsSync } from 'fs'
 import crypto from 'crypto'
 import path from 'path'
 import os from 'os'
@@ -356,6 +356,28 @@ function persistSessionMap() {
     writeFileSync(SESSION_MAP_FILE, JSON.stringify([...sessionMap]), 'utf-8')
   } catch (err) {
     log(chalk.yellow(`[session] Failed to persist session map to ${SESSION_MAP_FILE}: ${err?.message || err}`))
+  }
+}
+
+// ── Device ID Persistence ────────────────────────────────────────────────
+// Each local-host instance has a stable deviceId (UUID) that persists across
+// restarts. Stored in ~/.office-xyz/device-id alongside session.json.
+const DEVICE_ID_DIR = path.join(os.homedir(), '.office-xyz')
+const DEVICE_ID_FILE = path.join(DEVICE_ID_DIR, 'device-id')
+
+function loadDeviceId() {
+  try {
+    if (!existsSync(DEVICE_ID_FILE)) return null
+    return readFileSync(DEVICE_ID_FILE, 'utf-8').trim() || null
+  } catch { return null }
+}
+
+function saveDeviceId(deviceId) {
+  try {
+    mkdirSync(DEVICE_ID_DIR, { recursive: true })
+    writeFileSync(DEVICE_ID_FILE, deviceId, 'utf-8')
+  } catch (err) {
+    log(chalk.yellow(`[device] Failed to persist deviceId: ${err?.message}`))
   }
 }
 
@@ -2598,6 +2620,10 @@ function connectLocalDevice() {
     deviceIsAlive = true
     const agentHandle = argv.agent
     const officeId = agentHandle.split('.').slice(1).join('.')
+
+    // Load persisted deviceId from session (survives restarts)
+    const persistedDeviceId = loadDeviceId()
+
     // Register as agent-bound device (NOT office-wide).
     // Only this specific agent's sessions can access the local file system.
     dws.send(JSON.stringify({
@@ -2614,6 +2640,7 @@ function connectLocalDevice() {
         agentBound: true,
         boundAgentHandle: agentHandle,
         officeWide: false,
+        deviceId: persistedDeviceId || undefined,
       },
     }))
 
@@ -2651,7 +2678,13 @@ function connectLocalDevice() {
     let msg
     try { msg = JSON.parse(data.toString()) } catch { return }
 
-    // Ignore registration ack and other non-tool messages
+    // Handle registration ack — persist deviceId for reconnect
+    if (msg.type === 'registered' && msg.deviceId) {
+      saveDeviceId(msg.deviceId)
+      log(chalk.dim(`[device] Registered with deviceId: ${msg.deviceId}`))
+      return
+    }
+
     if (msg.type === 'tool_request') {
       const { requestId, toolName, params } = msg
       log(chalk.cyan(`[device] tool_request: ${toolName}${toolName === 'exec_command' && params?.command ? ` → ${params.command.slice(0, 80)}` : ''} (reqId: ${requestId})`))
