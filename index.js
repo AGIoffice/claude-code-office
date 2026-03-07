@@ -825,6 +825,197 @@ async function emitDeviceLiveView(noVncUrl, relayUrl) {
   }
 }
 
+// ═══════════════════════════════════════════════════════════════════════════
+// Workspace Event Emitter — sends file:created/file:changed/file:deleted
+// events to Chat Bridge so the frontend WorkspacePanel renders real-time
+// Monaco editor previews. ECS agents do this via WorkspaceEventEmitter
+// class; local-host uses lightweight HTTP POSTs (same as emitDeviceLiveView).
+// ═══════════════════════════════════════════════════════════════════════════
+
+const EXTENSION_TO_LANGUAGE = {
+  js: 'javascript', jsx: 'javascript', ts: 'typescript', tsx: 'typescript',
+  mjs: 'javascript', cjs: 'javascript', py: 'python', rb: 'ruby',
+  go: 'go', rs: 'rust', java: 'java', kt: 'kotlin', swift: 'swift',
+  c: 'c', cpp: 'cpp', h: 'c', hpp: 'cpp', cs: 'csharp', php: 'php',
+  html: 'html', htm: 'html', css: 'css', scss: 'scss', less: 'less',
+  json: 'json', yaml: 'yaml', yml: 'yaml', toml: 'toml', xml: 'xml',
+  md: 'markdown', sql: 'sql', sh: 'shell', bash: 'shell', zsh: 'shell',
+  vue: 'vue', svelte: 'svelte', dockerfile: 'dockerfile', makefile: 'makefile',
+}
+
+function detectLanguageFromPath(filePath) {
+  if (!filePath) return 'plaintext'
+  const fileName = filePath.split('/').pop() || ''
+  const lower = fileName.toLowerCase()
+  if (lower === 'dockerfile') return 'dockerfile'
+  if (lower === 'makefile') return 'makefile'
+  const ext = fileName.split('.').pop()?.toLowerCase()
+  return EXTENSION_TO_LANGUAGE[ext] || 'plaintext'
+}
+
+/**
+ * Batch queue for workspace events — flushes every 16ms (same cadence as
+ * the ECS WorkspaceEventEmitter) to avoid flooding Chat Bridge.
+ */
+const _wsEventQueue = []
+let _wsEventFlushTimer = null
+const WS_EVENT_FLUSH_MS = 16
+const WS_EVENT_MAX_CONTENT = 100_000 // truncate large file contents
+
+function _truncateFileContent(content) {
+  if (!content || typeof content !== 'string') return content
+  if (content.length <= WS_EVENT_MAX_CONTENT) return content
+  const half = Math.floor(WS_EVENT_MAX_CONTENT / 2)
+  return content.slice(0, half) + '\n\n... [content truncated] ...\n\n' + content.slice(-half)
+}
+
+function _flushWorkspaceEvents() {
+  _wsEventFlushTimer = null
+  if (_wsEventQueue.length === 0) return
+  if (!hostId || hostId === 'pending') return
+
+  const events = _wsEventQueue.splice(0, 20)
+  const baseUrl =
+    process.env.CHAT_BRIDGE_HTTP_URL ||
+    process.env.CHAT_BRIDGE_URL ||
+    process.env.CHAT_BRIDGE_BASE_URL ||
+    'https://chatbridge.aladdinagi.xyz'
+
+  fetch(`${baseUrl}/api/workspace/event/batch`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ agentId: hostId, events }),
+    signal: AbortSignal.timeout(5000),
+  }).catch(err => {
+    // Best-effort — don't break the agent if Chat Bridge is unreachable
+    log(chalk.yellow(`[workspace-event] flush failed: ${err?.message || err}`))
+  })
+}
+
+function emitWorkspaceEvent(type, payload) {
+  _wsEventQueue.push({ type, payload, timestamp: Date.now() })
+  if (!_wsEventFlushTimer) {
+    _wsEventFlushTimer = setTimeout(_flushWorkspaceEvents, WS_EVENT_FLUSH_MS)
+  }
+}
+
+/**
+ * Convert an absolute file path to a workspace-relative path.
+ * The frontend expects relative paths (e.g. "src/app.js").
+ */
+function toRelativePath(absPath) {
+  if (!absPath) return absPath
+  // If already relative (no leading /), return as-is
+  if (!absPath.startsWith('/')) return absPath
+  // Strip workspace prefix
+  if (absPath.startsWith(workspace + '/')) {
+    return absPath.slice(workspace.length + 1)
+  }
+  return absPath
+}
+
+/**
+ * Emit a file:created or file:changed workspace event.
+ * Called after Write/Edit tools complete or after direct file operations.
+ */
+function emitFileWorkspaceEvent(filePath, content, action = 'create', originalContent = '') {
+  const relPath = toRelativePath(filePath)
+  const language = detectLanguageFromPath(relPath)
+  const type = action === 'create' ? 'file:created' : 'file:changed'
+  const truncContent = _truncateFileContent(content)
+  const truncOriginal = action === 'edit' ? _truncateFileContent(originalContent) : undefined
+
+  emitWorkspaceEvent(type, {
+    path: relPath,
+    action,
+    content: truncContent,
+    originalContent: truncOriginal,
+    size: content?.length || 0,
+    encoding: 'utf-8',
+    language,
+  })
+}
+
+function emitFileDeletedEvent(filePath) {
+  emitWorkspaceEvent('file:deleted', {
+    path: toRelativePath(filePath),
+    action: 'delete',
+  })
+}
+
+/**
+ * Emit a doc:update workspace event.
+ * - isWriting=true  → agent is actively writing, triggers live preview + auto-show panel
+ * - isWriting=false → writing complete, content is final (routes binary files to Preview/Docs tab)
+ * Immediately flushed (no batching) for minimal latency, matching ECS behavior.
+ */
+function emitDocUpdateEvent(filePath, content, isWriting = true) {
+  const relPath = toRelativePath(filePath)
+  const language = detectLanguageFromPath(relPath)
+  const truncContent = _truncateFileContent(content)
+
+  const event = {
+    type: 'doc:update',
+    payload: {
+      path: relPath,
+      content: truncContent,
+      language,
+      isWriting,
+      size: content?.length || 0,
+      truncated: truncContent !== content,
+    },
+    timestamp: Date.now(),
+  }
+  // doc:update should flush immediately for real-time preview (same as ECS)
+  if (!hostId || hostId === 'pending') return
+  const baseUrl =
+    process.env.CHAT_BRIDGE_HTTP_URL ||
+    process.env.CHAT_BRIDGE_URL ||
+    process.env.CHAT_BRIDGE_BASE_URL ||
+    'https://chatbridge.aladdinagi.xyz'
+  fetch(`${baseUrl}/api/workspace/event/batch`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ agentId: hostId, events: [event] }),
+    signal: AbortSignal.timeout(5000),
+  }).catch(err => {
+    log(chalk.yellow(`[workspace-event] doc:update flush failed: ${err?.message || err}`))
+  })
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Tool-name sets for detecting file-writing tools across all CLI providers
+// ═══════════════════════════════════════════════════════════════════════════
+
+// Normalized names that represent file-create operations
+const FILE_CREATE_TOOLS = new Set(['Write', 'FileWrite'])
+// Normalized names that represent file-edit operations
+const FILE_EDIT_TOOLS = new Set(['Edit', 'FileEdit'])
+
+/**
+ * Extract file path from tool input across all CLI providers.
+ * Different CLIs use different parameter names for file paths.
+ */
+function extractFilePathFromInput(input) {
+  if (!input || typeof input !== 'object') return null
+  return input.file_path || input.path || input.filePath || input.filename || null
+}
+
+/**
+ * Try to read the current file content from disk.
+ * Used to provide content for workspace events when the tool result
+ * doesn't include the full file content.
+ */
+async function readFileContentSafe(filePath) {
+  try {
+    const fs = await import('fs/promises')
+    const absPath = path.isAbsolute(filePath) ? filePath : path.resolve(workspace, filePath)
+    return await fs.readFile(absPath, 'utf-8')
+  } catch {
+    return null
+  }
+}
+
 function truncateText(value, max = 1200) {
   if (typeof value !== 'string') return value
   if (value.length <= max) return value
@@ -1208,6 +1399,16 @@ async function handleMessage(message) {
           timestamp: startedAt,
         },
       })
+      // ─── doc:update isWriting=true — auto-show workspace panel ─────────
+      // When a file-writing tool starts, emit doc:update so the frontend
+      // auto-opens the workspace panel and shows a "writing..." indicator.
+      if (input && (FILE_CREATE_TOOLS.has(normalized) || FILE_EDIT_TOOLS.has(normalized))) {
+        const filePath = extractFilePathFromInput(input)
+        if (filePath) {
+          const content = input.content || input.file_text || ''
+          emitDocUpdateEvent(filePath, content, true)
+        }
+      }
     }
 
     const emitToolEnd = ({ toolUseId, toolName, input, result, error, timestamp, force = false }) => {
@@ -1236,6 +1437,32 @@ async function handleMessage(message) {
           timestamp: endedAt,
         },
       })
+      // ─── Workspace event emission for file-writing tools ───────────────
+      // When a Write/Edit/FileWrite/FileEdit tool completes successfully,
+      // emit file:created or file:changed so the frontend WorkspacePanel
+      // renders the file in Monaco editor in real-time.
+      if (status === 'completed' && resolvedInput) {
+        const filePath = extractFilePathFromInput(resolvedInput)
+        if (filePath) {
+          if (FILE_CREATE_TOOLS.has(resolvedTool)) {
+            // Write/FileWrite — file was created or overwritten
+            const content = resolvedInput.content || resolvedInput.file_text || ''
+            emitFileWorkspaceEvent(filePath, content, 'create')
+            // doc:update isWriting=false — finalize preview, route binary to Docs tab
+            emitDocUpdateEvent(filePath, content, false)
+          } else if (FILE_EDIT_TOOLS.has(resolvedTool)) {
+            // Edit/FileEdit — file was modified (try to read final content)
+            readFileContentSafe(filePath).then(finalContent => {
+              if (finalContent !== null) {
+                emitFileWorkspaceEvent(filePath, finalContent, 'edit')
+                // doc:update isWriting=false — finalize preview
+                emitDocUpdateEvent(filePath, finalContent, false)
+              }
+            })
+          }
+        }
+      }
+
       const actionRecord = {
         id: toolUseId,
         toolName: resolvedTool,
@@ -2526,12 +2753,17 @@ async function executeLocalTool(toolName, params) {
       const filePath = path.resolve(workspace, params.path)
       await fs.mkdir(path.dirname(filePath), { recursive: true })
       await fs.writeFile(filePath, params.content || '', 'utf-8')
+      // Emit workspace event for real-time Monaco preview
+      emitFileWorkspaceEvent(filePath, params.content || '', 'create')
+      emitDocUpdateEvent(filePath, params.content || '', false)
       return { success: true, path: filePath }
     }
 
     case 'delete_file': {
       const filePath = path.resolve(workspace, params.path)
       await fs.rm(filePath, { recursive: true, force: true })
+      // Emit workspace event for real-time file tree update
+      emitFileDeletedEvent(filePath)
       return { success: true, path: filePath }
     }
 
