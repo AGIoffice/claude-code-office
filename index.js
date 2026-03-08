@@ -186,6 +186,33 @@ if (!providerConfig) {
   process.exit(1)
 }
 
+// ── Pre-flight: check that the CLI binary exists, auto-install if missing ─
+function checkCliInstalled() {
+  const cmd = argv['cli-command'] || providerConfig.command
+  try {
+    execSync(`which ${cmd}`, { stdio: 'ignore' })
+  } catch {
+    console.log('')
+    console.log(chalk.yellow(`  ⚠ "${cmd}" CLI not found. Installing automatically...`))
+    console.log(chalk.dim(`  Running: ${providerConfig.installHint}`))
+    console.log('')
+    try {
+      execSync(providerConfig.installHint, { stdio: 'inherit' })
+      // Verify installation succeeded
+      execSync(`which ${cmd}`, { stdio: 'ignore' })
+      console.log(chalk.green(`  ✔ "${cmd}" installed successfully!`))
+      console.log('')
+    } catch (installErr) {
+      console.log('')
+      console.log(chalk.red.bold(`  ✘ Auto-install failed`))
+      console.log(chalk.yellow(`  Please install manually:`))
+      console.log(chalk.white.bold(`    ${providerConfig.installHint}`))
+      console.log('')
+      process.exit(1)
+    }
+  }
+}
+
 // ── Helpers ────────────────────────────────────────────────────────────────
 
 /**
@@ -3059,6 +3086,9 @@ process.on('SIGTERM', shutdown)
 // ── Startup ────────────────────────────────────────────────────────────────
 
 async function startup() {
+  // Pre-flight: ensure the CLI binary is installed before connecting
+  checkCliInstalled()
+
   // Direct connect mode: --agent + --token provided → skip onboarding
   if (argv.agent && argv.token) {
     console.log('')
