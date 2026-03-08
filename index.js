@@ -295,6 +295,86 @@ let wakeFromSleep = false        // Set when system wake is detected
 let registryHeartbeatTimer = null
 const REGISTRY_HEARTBEAT_INTERVAL_MS = 30_000  // Report liveness to Registry every 30s
 
+// ── Claude CLI auth health check ─────────────────────────────────────────
+// Track consecutive 403/auth failures from `claude -p`. When threshold is
+// reached, verify auth status and notify the owner to re-login.
+let consecutiveAuthFailures = 0
+let authCheckInProgress = false
+let lastAuthNotificationAt = 0
+const AUTH_FAILURE_THRESHOLD = 2        // trigger check after N consecutive 403s
+const AUTH_NOTIFICATION_COOLDOWN_MS = 5 * 60_000  // don't spam — max once per 5 min
+
+async function checkClaudeAuthHealth() {
+  if (authCheckInProgress) return
+  authCheckInProgress = true
+  try {
+    // Run `claude auth status` to check if the session is valid
+    const { stdout, stderr } = await execAsync('claude auth status 2>&1', {
+      timeout: 10_000,
+      env: { ...process.env },
+    }).catch(err => ({ stdout: err.stdout || '', stderr: err.stderr || err.message }))
+    const output = `${stdout}\n${stderr}`.toLowerCase()
+    const isAuthed = output.includes('authenticated') || output.includes('logged in') || output.includes('active')
+    const isExpired = output.includes('expired') || output.includes('not authenticated') || output.includes('not logged in') || output.includes('no active')
+
+    if (isExpired || !isAuthed) {
+      log(chalk.red('[auth-health] Claude CLI session is expired or invalid'))
+      log(chalk.red(`[auth-health] Status output: ${stdout.trim().slice(0, 200)}`))
+
+      // Notify via WS so the user sees it in the office chat
+      const now = Date.now()
+      if (now - lastAuthNotificationAt > AUTH_NOTIFICATION_COOLDOWN_MS && wsRef?.readyState === 1) {
+        lastAuthNotificationAt = now
+        try {
+          const payload = {
+            type: 'system_notification',
+            level: 'error',
+            title: 'Claude CLI Authentication Expired',
+            message: '⚠️ Claude CLI 登录已过期，请在终端运行 `claude login` 重新认证。在此之前我无法处理消息。',
+            agentHandle: argv.agent,
+            timestamp: new Date().toISOString(),
+          }
+          wsRef.send(JSON.stringify(payload))
+          log(chalk.yellow('[auth-health] Sent auth-expired notification to office'))
+        } catch (err) {
+          log(chalk.red(`[auth-health] Failed to send notification: ${err.message}`))
+        }
+      }
+
+      // Also log prominently to console so local user sees it
+      console.log('')
+      console.log(chalk.red.bold('  ⚠️  Claude CLI authentication expired!'))
+      console.log(chalk.yellow('  Run: claude login'))
+      console.log(chalk.yellow('  Or set ANTHROPIC_API_KEY for key-based auth (more stable).'))
+      console.log('')
+    } else {
+      log(chalk.green('[auth-health] Claude CLI session appears valid'))
+      // Auth is valid but we got 403 — might be a transient server issue
+      consecutiveAuthFailures = 0
+    }
+  } catch (err) {
+    log(chalk.red(`[auth-health] Failed to check auth status: ${err.message}`))
+  } finally {
+    authCheckInProgress = false
+  }
+}
+
+function onAuthFailureDetected() {
+  consecutiveAuthFailures++
+  log(chalk.yellow(`[auth-health] Auth failure #${consecutiveAuthFailures}`))
+  if (consecutiveAuthFailures >= AUTH_FAILURE_THRESHOLD) {
+    checkClaudeAuthHealth()
+  }
+}
+
+function onSuccessfulResponse() {
+  // Reset counter on any successful response
+  if (consecutiveAuthFailures > 0) {
+    consecutiveAuthFailures = 0
+    log(chalk.dim('[auth-health] Reset auth failure counter (successful response)'))
+  }
+}
+
 // ── Graceful shutdown handling ────────────────────────────────────────────
 // During ECS rolling deployments, Chat Bridge sends `server_shutdown` before
 // closing the WS.  When we see that message, we keep active CLI processes
@@ -2017,6 +2097,13 @@ async function handleMessage(message) {
         log(chalk.yellow(`[session] No VO sessionId in message — cannot track session (resultSessionId=${resultSessionId})`))
       }
 
+      // Auth health tracking: detect consecutive 403s and notify owner
+      if (isApiError && !isRateLimitError) {
+        onAuthFailureDetected()
+      } else if (!isApiError && fullText) {
+        onSuccessfulResponse()
+      }
+
       if (fullText) {
         process.stdout.write('\n')
         info(chalk[channel.color](`[${channel.type}] ←`) + chalk.dim(` ${fullText.slice(0, 120)}${fullText.length > 120 ? '...' : ''}`))
@@ -2636,7 +2723,7 @@ function connectLocalDevice() {
         deviceType: 'local-agent',
         hostname: os.hostname(),
         platform: `${os.platform()}-${os.arch()}`,
-        capabilities: ['file_ops', 'exec_command', 'computer_use'],
+        capabilities: ['file_ops', 'exec_command', 'computer_use', 'phone_adb'],
         agentBound: true,
         boundAgentHandle: agentHandle,
         officeWide: false,
@@ -2818,6 +2905,118 @@ async function executeLocalTool(toolName, params) {
           stderr: execErr.stderr || execErr.message,
           exitCode: execErr.status ?? 1,
         }
+      }
+    }
+
+    // ── Phone / ADB tools ─────────────────────────────────────────────────
+    // These run ADB on the user's machine to control a USB-connected Android phone.
+    case 'phone_tap': {
+      const { runAdbShell } = await import('../tools/definitions/phoneAdbHelper.js')
+      const result = await runAdbShell(`input tap ${Math.round(params.x)} ${Math.round(params.y)}`, { serial: params.serial })
+      if (result.exitCode !== 0) throw new Error(result.stderr || result.stdout)
+      return { content: [{ type: 'text', text: `✅ Tapped at (${params.x}, ${params.y})` }] }
+    }
+
+    case 'phone_swipe': {
+      const { runAdbShell } = await import('../tools/definitions/phoneAdbHelper.js')
+      const dur = params.duration_ms || 300
+      const result = await runAdbShell(
+        `input swipe ${Math.round(params.x1)} ${Math.round(params.y1)} ${Math.round(params.x2)} ${Math.round(params.y2)} ${Math.round(dur)}`,
+        { serial: params.serial }
+      )
+      if (result.exitCode !== 0) throw new Error(result.stderr || result.stdout)
+      return { content: [{ type: 'text', text: `✅ Swiped (${params.x1},${params.y1}) → (${params.x2},${params.y2})` }] }
+    }
+
+    case 'phone_type_text': {
+      const { runAdbShell } = await import('../tools/definitions/phoneAdbHelper.js')
+      const text = params.text
+      if (!text) throw new Error('text is required')
+      const isAscii = /^[\x20-\x7E]+$/.test(text)
+      if (isAscii) {
+        const escaped = text.replace(/([\\'"` ])/g, '\\$1')
+        const result = await runAdbShell(`input text "${escaped}"`, { serial: params.serial })
+        if (result.exitCode !== 0) throw new Error(result.stderr || result.stdout)
+      } else {
+        // Non-ASCII: use ADB broadcast for IME input
+        const result = await runAdbShell(
+          `am broadcast -a ADB_INPUT_TEXT --es msg '${text.replace(/'/g, "'\\''")}'`,
+          { serial: params.serial }
+        )
+        if (result.exitCode !== 0) throw new Error(result.stderr || result.stdout)
+      }
+      return { content: [{ type: 'text', text: `✅ Typed: "${text.slice(0, 50)}${text.length > 50 ? '...' : ''}"` }] }
+    }
+
+    case 'phone_press_key': {
+      const { runAdbShell } = await import('../tools/definitions/phoneAdbHelper.js')
+      const key = params.key
+      if (!key) throw new Error('key is required')
+      // Simple keycode mapping for common keys
+      const keyMap = { home: 3, back: 4, enter: 66, delete: 67, power: 26, volume_up: 24, volume_down: 25, tab: 61, recent_apps: 187, notification: 83 }
+      const keycode = keyMap[key.toLowerCase()] || parseInt(key, 10) || key
+      const cmd = params.long_press ? `input keyevent --longpress ${keycode}` : `input keyevent ${keycode}`
+      const result = await runAdbShell(cmd, { serial: params.serial })
+      if (result.exitCode !== 0) throw new Error(result.stderr || result.stdout)
+      return { content: [{ type: 'text', text: `✅ Pressed key: ${key}` }] }
+    }
+
+    case 'phone_screenshot': {
+      const { adbScreenshot } = await import('../tools/definitions/phoneAdbHelper.js')
+      const screenshot = await adbScreenshot({ serial: params.serial })
+      return {
+        content: [{
+          type: 'image',
+          source: { type: 'base64', media_type: 'image/png', data: screenshot.base64 },
+        }],
+      }
+    }
+
+    case 'phone_get_ui': {
+      const { adbDumpUi, parseUiElements } = await import('../tools/definitions/phoneAdbHelper.js')
+      const xml = await adbDumpUi({ serial: params.serial })
+      const elements = parseUiElements(xml)
+      const lines = elements.map((el, i) => {
+        const label = el.text || el.contentDesc || el.className
+        return `[${i}] "${label}" — tap(${el.center.x}, ${el.center.y})  ${el.bounds}`
+      })
+      return {
+        content: [{ type: 'text', text: elements.length ? `Found ${elements.length} elements:\n\n${lines.join('\n')}` : 'No interactive elements found.' }],
+        structuredContent: { elements, count: elements.length },
+      }
+    }
+
+    case 'phone_launch_app': {
+      const { runAdbShell } = await import('../tools/definitions/phoneAdbHelper.js')
+      const app = params.app
+      if (!app) throw new Error('app is required')
+      // Try monkey launch (works for most apps)
+      const result = await runAdbShell(`monkey -p ${app} -c android.intent.category.LAUNCHER 1`, { serial: params.serial })
+      if (result.exitCode !== 0) throw new Error(result.stderr || result.stdout)
+      return { content: [{ type: 'text', text: `✅ Launched: ${app}` }] }
+    }
+
+    case 'phone_list_apps': {
+      const { runAdbShell } = await import('../tools/definitions/phoneAdbHelper.js')
+      const flag = params.third_party_only !== false ? '-3' : ''
+      const result = await runAdbShell(`pm list packages ${flag}`, { serial: params.serial, timeoutMs: 10000 })
+      if (result.exitCode !== 0) throw new Error(result.stderr || result.stdout)
+      let packages = result.stdout.split('\n').map(l => l.replace('package:', '').trim()).filter(Boolean)
+      if (params.filter) {
+        const f = params.filter.toLowerCase()
+        packages = packages.filter(p => p.toLowerCase().includes(f))
+      }
+      return { content: [{ type: 'text', text: packages.length ? packages.join('\n') : 'No matching apps found.' }] }
+    }
+
+    case 'phone_shell': {
+      const { runAdbShell } = await import('../tools/definitions/phoneAdbHelper.js')
+      if (!params.command) throw new Error('command is required')
+      const result = await runAdbShell(params.command, { serial: params.serial, timeoutMs: params.timeout_ms || 15000 })
+      const output = [result.stdout, result.stderr].filter(Boolean).join('\n').trim()
+      return {
+        content: [{ type: 'text', text: result.exitCode === 0 ? (output || '(no output)') : `Exit code ${result.exitCode}\n${output}` }],
+        structuredContent: { command: params.command, exitCode: result.exitCode, stdout: result.stdout, stderr: result.stderr },
       }
     }
 
