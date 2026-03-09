@@ -195,32 +195,27 @@ function checkCliInstalled() {
     console.log('')
     console.log(chalk.yellow(`  ⚠ "${cmd}" CLI not found. Installing automatically...`))
     console.log('')
-    // Try without sudo first, fall back to sudo on any failure (e.g. EACCES)
+    // Try without sudo first, fall back to sudo if EACCES
     const installCmd = providerConfig.installHint
-    let installed = false
     try {
       console.log(chalk.dim(`  Running: ${installCmd}`))
       execSync(installCmd, { stdio: 'inherit' })
-      installed = true
-    } catch {
-      // First attempt failed (usually EACCES on macOS), retry with sudo
-      console.log('')
-      console.log(chalk.yellow(`  Permission denied, retrying with sudo...`))
-      console.log(chalk.dim(`  Running: sudo ${installCmd}`))
-      try {
-        execSync(`sudo ${installCmd}`, { stdio: 'inherit' })
-        installed = true
-      } catch {
-        // sudo also failed
+    } catch (err) {
+      if (err.status !== 0 || (err.message && err.message.includes('EACCES'))) {
+        console.log('')
+        console.log(chalk.yellow(`  Permission denied, retrying with sudo...`))
+        console.log(chalk.dim(`  Running: sudo ${installCmd}`))
+        try {
+          execSync(`sudo ${installCmd}`, { stdio: 'inherit' })
+        } catch {
+          console.log('')
+          console.log(chalk.red.bold(`  ✘ Auto-install failed`))
+          console.log(chalk.yellow(`  Please install manually:`))
+          console.log(chalk.white.bold(`    sudo ${installCmd}`))
+          console.log('')
+          process.exit(1)
+        }
       }
-    }
-    if (!installed) {
-      console.log('')
-      console.log(chalk.red.bold(`  ✘ Auto-install failed`))
-      console.log(chalk.yellow(`  Please install manually:`))
-      console.log(chalk.white.bold(`    sudo ${installCmd}`))
-      console.log('')
-      process.exit(1)
     }
     // Verify installation succeeded
     try {
