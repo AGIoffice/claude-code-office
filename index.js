@@ -3168,7 +3168,7 @@ async function executeLocalTool(toolName, params) {
       return {
         content: [{
           type: 'image',
-          source: { type: 'base64', media_type: 'image/png', data: screenshot.base64 },
+          source: { type: 'base64', media_type: screenshot.mediaType || 'image/png', data: screenshot.base64 },
         }],
       }
     }
@@ -3219,6 +3219,134 @@ async function executeLocalTool(toolName, params) {
         content: [{ type: 'text', text: result.exitCode === 0 ? (output || '(no output)') : `Exit code ${result.exitCode}\n${output}` }],
         structuredContent: { command: params.command, exitCode: result.exitCode, stdout: result.stdout, stderr: result.stderr },
       }
+    }
+
+    // ── Phone compound actions (batch execution) ──────────────────────────
+    case 'phone_execute_actions': {
+      const { runAdbShell: adbShell, adbScreenshot: adbShot, adbDumpUi: adbUi, parseUiElements: parseUi } =
+        await import('../tools/definitions/phoneAdbHelper.js')
+
+      const actions = params.actions
+      if (!actions || !Array.isArray(actions) || actions.length === 0) {
+        throw new Error('actions array is required and must not be empty')
+      }
+
+      const keyMap = { home: 3, back: 4, enter: 66, delete: 67, power: 26, volume_up: 24, volume_down: 25, tab: 61, recent_apps: 187, notification: 83, menu: 82, space: 62, escape: 111 }
+      const adbOpts = { serial: params.serial }
+      const startTime = Date.now()
+      const results = []
+      const contentParts = []
+
+      for (let i = 0; i < actions.length; i++) {
+        const act = actions[i]
+        try {
+          switch (act.action) {
+            case 'tap': {
+              const r = await adbShell(`input tap ${Math.round(act.x)} ${Math.round(act.y)}`, adbOpts)
+              if (r.exitCode !== 0) throw new Error(r.stderr || r.stdout)
+              results.push({ action: 'tap', x: act.x, y: act.y, status: 'ok' })
+              break
+            }
+            case 'swipe': {
+              const dur = act.duration_ms || 300
+              const r = await adbShell(`input swipe ${Math.round(act.x)} ${Math.round(act.y)} ${Math.round(act.x2)} ${Math.round(act.y2)} ${Math.round(dur)}`, adbOpts)
+              if (r.exitCode !== 0) throw new Error(r.stderr || r.stdout)
+              results.push({ action: 'swipe', status: 'ok' })
+              break
+            }
+            case 'type': {
+              if (!act.text) throw new Error('type action requires text')
+              const isAscii = /^[\x20-\x7E]+$/.test(act.text)
+              if (isAscii) {
+                const escaped = act.text.replace(/([\\'"` ])/g, '\\$1')
+                const r = await adbShell(`input text "${escaped}"`, adbOpts)
+                if (r.exitCode !== 0) throw new Error(r.stderr || r.stdout)
+              } else {
+                const r = await adbShell(`am broadcast -a ADB_INPUT_TEXT --es msg '${act.text.replace(/'/g, "'\\''")}'`, adbOpts)
+                if (r.exitCode !== 0) throw new Error(r.stderr || r.stdout)
+              }
+              results.push({ action: 'type', status: 'ok' })
+              break
+            }
+            case 'press_key': {
+              if (!act.key) throw new Error('press_key requires key')
+              const keycode = keyMap[act.key.toLowerCase()] || parseInt(act.key, 10) || act.key
+              const cmd = act.long_press ? `input keyevent --longpress ${keycode}` : `input keyevent ${keycode}`
+              const r = await adbShell(cmd, adbOpts)
+              if (r.exitCode !== 0) throw new Error(r.stderr || r.stdout)
+              results.push({ action: 'press_key', key: act.key, status: 'ok' })
+              break
+            }
+            case 'launch_app': {
+              if (!act.app) throw new Error('launch_app requires app')
+              const r = await adbShell(`monkey -p ${act.app} -c android.intent.category.LAUNCHER 1`, adbOpts)
+              if (r.exitCode !== 0) throw new Error(r.stderr || r.stdout)
+              results.push({ action: 'launch_app', app: act.app, status: 'ok' })
+              break
+            }
+            case 'open_url': {
+              if (!act.url) throw new Error('open_url requires url')
+              const r = await adbShell(`am start -a android.intent.action.VIEW -d '${act.url}'`, adbOpts)
+              if (r.exitCode !== 0) throw new Error(r.stderr || r.stdout)
+              results.push({ action: 'open_url', status: 'ok' })
+              break
+            }
+            case 'wait': {
+              const ms = act.ms || 500
+              await new Promise(r => setTimeout(r, ms))
+              results.push({ action: 'wait', ms, status: 'ok' })
+              break
+            }
+            case 'screenshot': {
+              const shot = await adbShot(adbOpts)
+              results.push({ action: 'screenshot', status: 'ok', sizeKB: shot.sizeKB })
+              contentParts.push({ type: 'text', text: `📸 Checkpoint after step ${i + 1}:` })
+              contentParts.push({ type: 'image', source: { type: 'base64', media_type: shot.mediaType || 'image/png', data: shot.base64 } })
+              break
+            }
+            case 'get_ui': {
+              const xml = await adbUi(adbOpts)
+              const elements = parseUi(xml)
+              const lines = elements.map((el, idx) => {
+                const label = el.text || el.contentDesc || el.className
+                return `[${idx}] "${label}" — tap(${el.center.x}, ${el.center.y})  ${el.bounds}`
+              })
+              results.push({ action: 'get_ui', status: 'ok', count: elements.length })
+              contentParts.push({ type: 'text', text: `🔍 UI after step ${i + 1}: ${elements.length} elements\n${lines.join('\n')}` })
+              break
+            }
+            default:
+              throw new Error(`Unknown action: ${act.action}`)
+          }
+        } catch (err) {
+          const elapsed = Date.now() - startTime
+          log(`[phone_execute_actions] Step ${i + 1} (${act.action}) failed: ${err.message}`)
+          // Capture failure screenshot
+          let failShot = null
+          try { failShot = await adbShot(adbOpts) } catch { /* ignore */ }
+          const failContent = [{ type: 'text', text: `❌ Failed at step ${i + 1}/${actions.length} (${act.action}): ${err.message}\nCompleted ${i}/${actions.length} in ${elapsed}ms.` }]
+          if (failShot) {
+            failContent.push({ type: 'text', text: '📸 Screen at failure:' })
+            failContent.push({ type: 'image', source: { type: 'base64', media_type: failShot.mediaType || 'image/png', data: failShot.base64 } })
+          }
+          return { content: [...contentParts, ...failContent], isError: true, structuredContent: { results, failedAt: i, error: err.message, elapsed_ms: elapsed } }
+        }
+      }
+
+      const elapsed = Date.now() - startTime
+      const lastAct = actions[actions.length - 1]?.action
+      if (params.final_screenshot !== false && lastAct !== 'screenshot' && lastAct !== 'get_ui') {
+        try {
+          const finalShot = await adbShot(adbOpts)
+          contentParts.push({ type: 'text', text: `✅ All ${actions.length} actions done in ${elapsed}ms. Final screen:` })
+          contentParts.push({ type: 'image', source: { type: 'base64', media_type: finalShot.mediaType || 'image/png', data: finalShot.base64 } })
+        } catch {
+          contentParts.push({ type: 'text', text: `✅ All ${actions.length} actions done in ${elapsed}ms.` })
+        }
+      } else {
+        contentParts.push({ type: 'text', text: `✅ All ${actions.length} actions done in ${elapsed}ms.` })
+      }
+      return { content: contentParts, structuredContent: { results, elapsed_ms: elapsed, totalActions: actions.length } }
     }
 
     // ── Browser tools (local Chrome via CDP) ────────────────────────────────
