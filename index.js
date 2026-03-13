@@ -25,6 +25,8 @@ import crypto from 'crypto'
 import path from 'path'
 import os from 'os'
 import { fileURLToPath } from 'url'
+import { startMobileScreenBridge, stopAllMobileScreenBridges, getMobileScreenBridge } from './mobile-screen-bridge.js'
+import { startLocalBrowserBridge, stopLocalBrowserBridge, getLocalBrowserBridge, killLocalChrome } from './local-browser-bridge.js'
 // Inline tool name normalizer (can't import from parent CJS package — ESM/CJS conflict)
 // Maps raw CLI tool names to standard frontend TOOL_CONFIG keys
 const TOOL_NAME_MAP = {
@@ -937,7 +939,7 @@ function startVncBridgeForked(opts, screenRelayUrl) {
  * Uses the per-agent /api/workspace/event endpoint — isolation is
  * guaranteed by broadcastWorkspaceEvent(agentId).
  */
-async function emitDeviceLiveView(noVncUrl, relayUrl) {
+async function emitDeviceLiveView(noVncUrl, relayUrl, deviceType = 'computer') {
   if (!noVncUrl || !hostId || hostId === 'pending') return
   const baseUrl =
     process.env.CHAT_BRIDGE_HTTP_URL ||
@@ -945,18 +947,22 @@ async function emitDeviceLiveView(noVncUrl, relayUrl) {
     process.env.CHAT_BRIDGE_BASE_URL ||
     'https://chatbridge.aladdinagi.xyz'
   try {
+    const isMobile = deviceType === 'mobile'
+    const isBrowser = deviceType === 'browser'
+    const isRelayOnly = isMobile || isBrowser
+    const sessionPrefix = isMobile ? 'mobile' : isBrowser ? 'browser' : 'local'
     const payload = {
-      sessionId: `local-screen-${hostId}`,
+      sessionId: `${sessionPrefix}-screen-${hostId}`,
       noVncUrl,
-      deviceType: 'computer',
-      width: 1920,
-      height: 1080,
+      deviceType,
+      width: isMobile ? 720 : isBrowser ? 1280 : 1920,
+      height: isMobile ? 1280 : isBrowser ? 800 : 1080,
     }
-    // Include relay as fallback for cross-device streaming.
-    // Default to 'iframe' (direct localhost WS) which has zero relay latency.
-    // Frontend should try direct first, fall back to relay if unreachable.
+    // Include relay for cross-device streaming.
+    // Desktop: default 'iframe' (direct localhost WS), relay as fallback.
+    // Mobile/Browser: always 'relay' (frames come via chatbridge relay, no direct WS).
     if (relayUrl) {
-      payload.streamType = 'iframe'
+      payload.streamType = isRelayOnly ? 'relay' : 'iframe'
       payload.relayUrl = relayUrl
     }
     const resp = await fetch(`${baseUrl}/api/workspace/event`, {
@@ -2733,6 +2739,132 @@ let deviceWsRef = null
 let deviceReconnectTimer = null
 let devicePingTimer = null
 
+// ── ADB Phone Device Detection ──────────────────────────────────────────────
+// Track ADB-connected phones as independent devices.
+// key: adb serial, value: { serial, model, deviceId (from server) }
+const adbRegisteredDevices = new Map()
+let adbPollTimer = null
+const ADB_POLL_INTERVAL_MS = 30_000 // 30 seconds
+
+/**
+ * Detect ADB devices and register each as an independent phone device.
+ * Called once after desktop registration and periodically for hotplug detection.
+ */
+async function detectAndRegisterAdbDevices(dws, officeId, agentHandle, parentDeviceId) {
+  if (dws.readyState !== WebSocket.OPEN) return
+
+  try {
+    const { stdout } = await execAsync('adb devices -l', { timeout: 5000 })
+    const lines = stdout.split('\n').slice(1) // skip "List of devices attached" header
+    const currentSerials = new Set()
+
+    for (const line of lines) {
+      const match = line.match(/^(\S+)\s+device\s+(.*)/)
+      if (!match) continue
+      const serial = match[1]
+      const propsStr = match[2] // e.g. "usb:xxx product:panther model:Pixel_7 device:panther"
+      currentSerials.add(serial)
+
+      // Skip if already registered
+      if (adbRegisteredDevices.has(serial)) continue
+
+      // Extract model name
+      const model = propsStr.match(/model:(\S+)/)?.[1]?.replace(/_/g, ' ') || serial
+
+      log(chalk.green(`[adb] Detected phone: ${model} (${serial})`))
+
+      // Register as independent phone device
+      dws.send(JSON.stringify({
+        type: 'register',
+        officeId,
+        agentHandle,
+        userId: agentHandle,
+        metadata: {
+          deviceType: 'phone',
+          connectionMode: 'adb',
+          parentDeviceId: parentDeviceId || undefined,
+          hostname: model,
+          platform: 'android',
+          capabilities: ['phone_adb', 'screen_mirror'],
+          serial,
+          agentBound: true,
+          boundAgentHandle: agentHandle,
+          officeWide: false,
+        },
+      }))
+
+      adbRegisteredDevices.set(serial, { serial, model, deviceId: null })
+    }
+
+    // Unregister phones that are no longer connected
+    for (const [serial, info] of adbRegisteredDevices) {
+      if (!currentSerials.has(serial)) {
+        log(chalk.yellow(`[adb] Phone disconnected: ${info.model} (${serial})`))
+        // Stop mobile screen bridge for this phone
+        const mobileBridge = getMobileScreenBridge(serial)
+        if (mobileBridge) mobileBridge.stop()
+
+        if (info.deviceId) {
+          dws.send(JSON.stringify({
+            type: 'device_unregister',
+            deviceId: info.deviceId,
+          }))
+        }
+        adbRegisteredDevices.delete(serial)
+      }
+    }
+  } catch {
+    // ADB not available or no devices — silently ignore
+  }
+
+  // Start periodic polling if not already running
+  if (!adbPollTimer) {
+    adbPollTimer = setInterval(() => {
+      if (deviceWsRef?.readyState === WebSocket.OPEN) {
+        const ah = argv.agent
+        const oid = ah.split('.').slice(1).join('.')
+        detectAndRegisterAdbDevices(deviceWsRef, oid, ah, loadDeviceId())
+      }
+    }, ADB_POLL_INTERVAL_MS)
+  }
+}
+
+function stopAdbPoll() {
+  if (adbPollTimer) { clearInterval(adbPollTimer); adbPollTimer = null }
+  adbRegisteredDevices.clear()
+  stopAllMobileScreenBridges()
+}
+
+/**
+ * Start mobile screen bridge for a registered ADB phone.
+ * Streams phone screen frames to chatbridge relay and emits device:liveview.
+ */
+async function startMobileScreenForPhone(serial, deviceId) {
+  try {
+    const chatBridgeWsBase = (process.env.CHAT_BRIDGE_URL || 'wss://chatbridge.aladdinagi.xyz')
+      .replace(/^http/, 'ws')
+      .replace(/\/+$/, '')
+    // Use separate relay channel from desktop: hostId-mobile
+    const mobileRelayUrl = `${chatBridgeWsBase}/ws/screen/${encodeURIComponent(hostId)}-mobile`
+
+    const bridge = await startMobileScreenBridge({
+      serial,
+      relayUrl: mobileRelayUrl,
+      connectionToken: argv.token || '',
+      log: (msg) => log(chalk.dim(msg)),
+      maxFps: 2,
+      maxWidth: 720,
+    })
+
+    log(chalk.green(`[mobile-screen] Bridge started for ${serial} (${bridge.resolution.width}x${bridge.resolution.height})`))
+
+    // Emit device:liveview with deviceType 'mobile' so frontend switches to Mobile tab
+    emitDeviceLiveView(mobileRelayUrl, mobileRelayUrl, 'mobile')
+  } catch (err) {
+    log(chalk.yellow(`[mobile-screen] Failed to start bridge for ${serial}: ${err.message}`))
+  }
+}
+
 function connectLocalDevice() {
   // Clear any pending reconnect to avoid duplicates
   if (deviceReconnectTimer) { clearTimeout(deviceReconnectTimer); deviceReconnectTimer = null }
@@ -2783,6 +2915,9 @@ function connectLocalDevice() {
       },
     }))
 
+    // Detect and register ADB-connected phones as independent devices
+    detectAndRegisterAdbDevices(dws, officeId, agentHandle, persistedDeviceId)
+
     // Heartbeat: ping + pong timeout detection
     stopDeviceHeartbeat()
     let deviceLastPingTime = Date.now()
@@ -2819,8 +2954,21 @@ function connectLocalDevice() {
 
     // Handle registration ack — persist deviceId for reconnect
     if (msg.type === 'registered' && msg.deviceId) {
-      saveDeviceId(msg.deviceId)
-      log(chalk.dim(`[device] Registered with deviceId: ${msg.deviceId}`))
+      if (msg.deviceType === 'phone' && msg.serial) {
+        // Phone device — save deviceId keyed by serial for unregister
+        const info = adbRegisteredDevices.get(msg.serial)
+        if (info) info.deviceId = msg.deviceId
+        log(chalk.dim(`[device] Phone registered: ${msg.serial} → deviceId: ${msg.deviceId}`))
+
+        // Start mobile screen bridge for this phone
+        startMobileScreenForPhone(msg.serial, msg.deviceId)
+      } else if (msg.deviceType === 'phone') {
+        log(chalk.dim(`[device] Phone registered with deviceId: ${msg.deviceId}`))
+      } else {
+        // Desktop device — persist for reconnect
+        saveDeviceId(msg.deviceId)
+        log(chalk.dim(`[device] Registered with deviceId: ${msg.deviceId}`))
+      }
       return
     }
 
@@ -2840,6 +2988,7 @@ function connectLocalDevice() {
     log(chalk.yellow(`Local device disconnected (${code})`))
     deviceWsRef = null
     stopDeviceHeartbeat()
+    stopAdbPoll()
     // Reconnect after delay (only if not shutting down)
     if (code !== 1000) {
       deviceReconnectTimer = setTimeout(connectLocalDevice, 5000)
@@ -3072,9 +3221,158 @@ async function executeLocalTool(toolName, params) {
       }
     }
 
+    // ── Browser tools (local Chrome via CDP) ────────────────────────────────
+    case 'browser_navigate': {
+      const url = params.url
+      if (!url) throw new Error('url is required')
+      const result = await launchLocalBrowserAndNavigate(url)
+      return result
+    }
+
+    case 'browser_click': {
+      const bridge = getLocalBrowserBridge()
+      if (!bridge) throw new Error('No browser session — call browser_navigate first')
+      await bridge.cdpCommand('Input.dispatchMouseEvent', {
+        type: 'mousePressed', x: params.x, y: params.y, button: 'left', clickCount: 1,
+      })
+      await bridge.cdpCommand('Input.dispatchMouseEvent', {
+        type: 'mouseReleased', x: params.x, y: params.y, button: 'left', clickCount: 1,
+      })
+      return { content: [{ type: 'text', text: `✅ Clicked at (${params.x}, ${params.y})` }] }
+    }
+
+    case 'browser_screenshot': {
+      const bridge = getLocalBrowserBridge()
+      if (!bridge) throw new Error('No browser session — call browser_navigate first')
+      const result = await bridge.cdpCommand('Page.captureScreenshot', { format: 'png' })
+      return {
+        content: [{
+          type: 'image',
+          source: { type: 'base64', media_type: 'image/png', data: result.data },
+        }],
+      }
+    }
+
+    case 'browser_type': {
+      const bridge = getLocalBrowserBridge()
+      if (!bridge) throw new Error('No browser session — call browser_navigate first')
+      const text = params.text || ''
+      if (params.submit) {
+        await bridge.cdpCommand('Input.insertText', { text })
+        await bridge.cdpCommand('Input.dispatchKeyEvent', { type: 'keyDown', key: 'Enter', code: 'Enter' })
+        await bridge.cdpCommand('Input.dispatchKeyEvent', { type: 'keyUp', key: 'Enter', code: 'Enter' })
+      } else {
+        await bridge.cdpCommand('Input.insertText', { text })
+      }
+      return { content: [{ type: 'text', text: `✅ Typed: "${text.slice(0, 50)}${text.length > 50 ? '...' : ''}"` }] }
+    }
+
+    case 'browser_scroll': {
+      const bridge = getLocalBrowserBridge()
+      if (!bridge) throw new Error('No browser session — call browser_navigate first')
+      const dir = params.direction || 'down'
+      const amount = params.amount || 3
+      const deltaY = dir === 'up' ? -100 * amount : 100 * amount
+      await bridge.cdpCommand('Input.dispatchMouseEvent', {
+        type: 'mouseWheel', x: 640, y: 400, deltaX: 0, deltaY,
+      })
+      return { content: [{ type: 'text', text: `✅ Scrolled ${dir} (${amount} notches)` }] }
+    }
+
+    case 'browser_press_key': {
+      const bridge = getLocalBrowserBridge()
+      if (!bridge) throw new Error('No browser session — call browser_navigate first')
+      const key = params.key || ''
+      await bridge.cdpCommand('Input.dispatchKeyEvent', { type: 'keyDown', key, code: key })
+      await bridge.cdpCommand('Input.dispatchKeyEvent', { type: 'keyUp', key, code: key })
+      return { content: [{ type: 'text', text: `✅ Pressed key: ${key}` }] }
+    }
+
+    case 'browser_get_text': {
+      const bridge = getLocalBrowserBridge()
+      if (!bridge) throw new Error('No browser session — call browser_navigate first')
+      const result = await bridge.cdpCommand('Runtime.evaluate', {
+        expression: 'document.body.innerText',
+        returnByValue: true,
+      })
+      const text = result?.result?.value || ''
+      return { content: [{ type: 'text', text: text.slice(0, 10000) }] }
+    }
+
+    case 'browser_get_url': {
+      const bridge = getLocalBrowserBridge()
+      if (!bridge) throw new Error('No browser session — call browser_navigate first')
+      const result = await bridge.cdpCommand('Runtime.evaluate', {
+        expression: 'location.href',
+        returnByValue: true,
+      })
+      return { content: [{ type: 'text', text: result?.result?.value || '' }] }
+    }
+
+    case 'browser_back': {
+      const bridge = getLocalBrowserBridge()
+      if (!bridge) throw new Error('No browser session — call browser_navigate first')
+      await bridge.cdpCommand('Runtime.evaluate', { expression: 'history.back()' })
+      return { content: [{ type: 'text', text: '✅ Navigated back' }] }
+    }
+
+    case 'browser_forward': {
+      const bridge = getLocalBrowserBridge()
+      if (!bridge) throw new Error('No browser session — call browser_navigate first')
+      await bridge.cdpCommand('Runtime.evaluate', { expression: 'history.forward()' })
+      return { content: [{ type: 'text', text: '✅ Navigated forward' }] }
+    }
+
+    case 'browser_refresh': {
+      const bridge = getLocalBrowserBridge()
+      if (!bridge) throw new Error('No browser session — call browser_navigate first')
+      await bridge.cdpCommand('Page.reload', {})
+      return { content: [{ type: 'text', text: '✅ Page refreshed' }] }
+    }
+
     default:
       throw new Error(`Unknown local tool: ${toolName}`)
   }
+}
+
+// ── Local browser launch + bridge wiring ──────────────────────────────────────
+
+async function launchLocalBrowserAndNavigate(url) {
+  // Normalize URL
+  let normalizedUrl = url.trim()
+  const hasProtocol = normalizedUrl.startsWith('http://') || normalizedUrl.startsWith('https://') || normalizedUrl.startsWith('file://')
+  const looksLikeUrl = hasProtocol || normalizedUrl.includes('.') || normalizedUrl.startsWith('localhost')
+  if (looksLikeUrl) {
+    if (!hasProtocol) normalizedUrl = `https://${normalizedUrl}`
+  } else {
+    normalizedUrl = `https://www.google.com/search?q=${encodeURIComponent(normalizedUrl)}`
+  }
+
+  const bridge = getLocalBrowserBridge()
+  if (bridge) {
+    // Browser already running — just navigate
+    await bridge.navigate(normalizedUrl)
+    return { content: [{ type: 'text', text: `✅ Navigated to: ${normalizedUrl}` }] }
+  }
+
+  // First launch — start Chrome + bridge + emit liveview
+  const chatBridgeWsBase = (process.env.CHAT_BRIDGE_URL || 'wss://chatbridge.aladdinagi.xyz')
+    .replace(/^http/, 'ws')
+    .replace(/\/+$/, '')
+  const browserRelayUrl = `${chatBridgeWsBase}/ws/screen/${encodeURIComponent(hostId)}-browser`
+
+  await startLocalBrowserBridge({
+    relayUrl: browserRelayUrl,
+    connectionToken: argv.token || '',
+    url: normalizedUrl,
+    log: (msg) => log(chalk.dim(msg)),
+    maxFps: 3,
+  })
+
+  // Emit device:liveview for Browser tab
+  emitDeviceLiveView(browserRelayUrl, browserRelayUrl, 'browser')
+
+  return { content: [{ type: 'text', text: `✅ Browser opened: ${normalizedUrl}\n\nThe browser is now visible in the Workspace Panel's Browser tab.` }] }
 }
 
 // ── Graceful shutdown ──────────────────────────────────────────────────────
@@ -3102,6 +3400,9 @@ function shutdown() {
   if (deviceWsRef) {
     try { deviceWsRef.close(1000, 'shutdown') } catch { /* ignore */ }
   }
+  // Stop local browser bridge + Chrome
+  stopLocalBrowserBridge()
+  killLocalChrome()
   process.exit(0)
 }
 
