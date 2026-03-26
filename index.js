@@ -1529,6 +1529,10 @@ async function handleMessage(message) {
     let fullText = ''
     let resultSessionId = null
     let isApiError = false  // Track if this session encountered an API/auth error
+    let resultUsage = null       // Token usage from stream-json result event
+    let resultCostUsd = null     // total_cost_usd from result (0 for subscription)
+    let resultModelUsage = null  // Per-model token breakdown from result
+    let latestRateLimitInfo = null // Rate limit info from rate_limit_event
     const activeToolsByIndex = new Map()
     const activeToolsById = new Map()
     const finalizedToolIds = new Set()
@@ -1862,9 +1866,29 @@ async function handleMessage(message) {
           return
         }
 
+        // rate_limit_event: Claude Code emits this with subscription rate limit info
+        // { type: "rate_limit_event", rate_limit_info: { status, resetsAt, rateLimitType, overageStatus, ... } }
+        if (event.type === 'rate_limit_event') {
+          latestRateLimitInfo = event.rate_limit_info || null
+          // Forward to chat-bridge for real-time display in billing UI
+          sendJSON({
+            type: 'rateLimitUpdate',
+            sessionId,
+            commandId,
+            agentId: argv.agent,
+            rateLimitInfo: latestRateLimitInfo,
+            timestamp: Date.now(),
+          })
+          return
+        }
+
         // Final result message (type=result from claude -p --output-format stream-json)
         if (event.type === 'result') {
           resultSessionId = event.session_id || null
+          // Capture usage data for billing pipeline
+          if (event.usage) resultUsage = event.usage
+          if (event.total_cost_usd !== undefined) resultCostUsd = event.total_cost_usd
+          if (event.model_usage) resultModelUsage = event.model_usage
           // Detect API errors in result (e.g. 403 Forbidden, auth failures)
           if (event.is_error || event.isApiErrorMessage) {
             isApiError = true
@@ -2235,6 +2259,20 @@ async function handleMessage(message) {
       contentBlocks.sort((a, b) => (a._sortTs || 0) - (b._sortTs || 0))
       const normalizedContentBlocks = contentBlocks.map(({ _sortTs, ...rest }) => rest)
 
+      // Build usage/cost for billing pipeline — chat-bridge emitUsageFromResult picks these up
+      const isByoSubscription = resultCostUsd === 0 && resultUsage
+      const usageBlock = resultUsage ? {
+        promptTokens: resultUsage.input_tokens || resultUsage.promptTokens || 0,
+        completionTokens: resultUsage.output_tokens || resultUsage.completionTokens || 0,
+        tokens: (resultUsage.input_tokens || 0) + (resultUsage.output_tokens || 0),
+        cacheWriteTokens: resultUsage.cache_creation_input_tokens || resultUsage.cacheWriteTokens || 0,
+        cacheReadTokens: resultUsage.cache_read_input_tokens || resultUsage.cacheReadTokens || 0,
+      } : undefined
+      const costBlock = resultCostUsd !== null && resultCostUsd !== undefined ? {
+        amount: resultCostUsd,
+        currency: 'USD',
+      } : undefined
+
       try {
         sendJSON({
           type: 'result',
@@ -2243,10 +2281,17 @@ async function handleMessage(message) {
           stdout: displayText || '(No response)',
           stderr: '',
           exitCode: code || 0,
+          provider: 'anthropic',
+          resourceType: 'llm',
+          usage: usageBlock,
+          cost: costBlock,
           metadata: {
             toolActions: completedToolActions.length > 0 ? completedToolActions : undefined,
             thinkingBlocks: completedThinkingBlocks.length > 0 ? completedThinkingBlocks : undefined,
             contentBlocks: normalizedContentBlocks.length > 0 ? normalizedContentBlocks : undefined,
+            isByo: isByoSubscription || undefined,
+            rateLimitInfo: latestRateLimitInfo || undefined,
+            modelUsage: resultModelUsage || undefined,
           },
         })
       } catch (err) {
