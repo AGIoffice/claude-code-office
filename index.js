@@ -1867,7 +1867,8 @@ async function handleMessage(message) {
         }
 
         // rate_limit_event: Claude Code emits this with subscription rate limit info
-        // { type: "rate_limit_event", rate_limit_info: { status, resetsAt, rateLimitType, overageStatus, ... } }
+        // { type: "rate_limit_event", rate_limit_info: { status, resetsAt, rateLimitType, utilization (0-1), overageStatus, ... } }
+        // utilization is a 0-1 float from Anthropic API headers — present when status is 'allowed_warning' or 'rejected'
         if (event.type === 'rate_limit_event') {
           latestRateLimitInfo = event.rate_limit_info || null
           // Forward to chat-bridge for real-time display in billing UI
