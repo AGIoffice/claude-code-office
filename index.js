@@ -2015,9 +2015,10 @@ async function handleMessage(message) {
       const text = chunk.toString()
       if (text.trim()) {
         log(chalk.dim(`[stderr] ${text.trim().slice(0, 200)}`))
-        // Detect temporary rate-limit / quota errors (429) — session is still valid
+        // Detect temporary rate-limit / quota / overload errors (429, 529) — session is still valid
         // Also matches Claude CLI's "out of extra usage" / "out of usage" messages
-        if (/API Error:\s*429|exceeded your current quota|rate.?limit|over.?capacity|out of.*usage/i.test(text)) {
+        // 529 = Anthropic API overloaded (temporary, same treatment as 429)
+        if (/API Error:\s*(429|529)|Repeated\s+529|exceeded your current quota|rate.?limit|over.?capacity|out of.*usage|overloaded/i.test(text)) {
           isRateLimitError = true
           isApiError = true  // Still an API error (skip poisoned-binding save), but won't clear existing
           // Capture the usage message for forwarding to frontend
@@ -2144,7 +2145,7 @@ async function handleMessage(message) {
       // valid on Anthropic's side. Preserve the binding so --resume works when quota resets.
       // Also detect errors from response text (Claude CLI wraps API errors as text content)
       if (!isApiError && fullText) {
-        if (/API Error:\s*429|exceeded your current quota|rate.?limit|over.?capacity|out of.*usage/i.test(fullText)) {
+        if (/API Error:\s*(429|529)|Repeated\s+529|exceeded your current quota|rate.?limit|over.?capacity|out of.*usage|overloaded/i.test(fullText)) {
           isRateLimitError = true
           isApiError = true
           if (!usageExceededMessage) usageExceededMessage = fullText.trim()
