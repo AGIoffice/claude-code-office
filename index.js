@@ -1429,6 +1429,16 @@ async function handleMessage(message) {
       promptToInject += historyContext
     }
     
+    // Append local environment context so agent knows it's running on the user's machine
+    promptToInject += `\n\n## Local Environment`
+    promptToInject += `\nYou are running LOCALLY on the user's physical machine (not in the cloud).`
+    promptToInject += `\n- Hostname: ${os.hostname()}`
+    promptToInject += `\n- Platform: ${os.platform()} ${os.arch()}`
+    promptToInject += `\n- Working directory: ${workspace}`
+    promptToInject += `\n- The \`use_computer\` tool controls THIS machine's screen directly — no remote device needed.`
+    promptToInject += `\n- You can take screenshots, click, type, and interact with any app on this machine.`
+    promptToInject += `\n- You also have direct shell access to this machine via the Bash/run_command tools.`
+
     // Append platform context so agent knows the message source (Telegram/Slack/Web)
     if (platformInfo?.clientType) {
       const clientLabel = platformInfo.clientType.replace(/-/g, ' ')
