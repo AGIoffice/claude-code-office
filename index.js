@@ -1958,6 +1958,29 @@ async function handleMessage(message) {
             if (block?.type !== 'tool_result') continue
             const toolUseId = block.tool_use_id || block.toolUseId
             let resultPayload = block.content
+
+            // ─── Screenshot forwarding: emit streaming.image for image content ───
+            // Tool results (e.g. use_computer, browser_screenshot) may include
+            // image content blocks. Emit streaming.image so screenshots reach
+            // Telegram/Discord users via the chatbridge forwarding pipeline.
+            if (Array.isArray(resultPayload)) {
+              for (const item of resultPayload) {
+                if (item?.type === 'image') {
+                  const base64Data = item.source?.data || item.data
+                  const mediaType = item.source?.media_type || item.mimeType || 'image/png'
+                  if (base64Data) {
+                    sendJSON({
+                      type: 'streaming.image',
+                      sessionId,
+                      commandId,
+                      data: base64Data,
+                      mediaType,
+                    })
+                  }
+                }
+              }
+            }
+
             if (Array.isArray(resultPayload)) {
               resultPayload = resultPayload
                 .map((item) => (typeof item?.text === 'string' ? item.text : typeof item === 'string' ? item : JSON.stringify(item)))
