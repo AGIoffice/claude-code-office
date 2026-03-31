@@ -939,8 +939,8 @@ function startVncBridgeForked(opts, screenRelayUrl) {
  * Uses the per-agent /api/workspace/event endpoint — isolation is
  * guaranteed by broadcastWorkspaceEvent(agentId).
  */
-async function emitDeviceLiveView(noVncUrl, relayUrl, deviceType = 'computer') {
-  if (!noVncUrl || !hostId || hostId === 'pending') return
+async function emitDeviceLiveView(liveViewUrl, relayUrl, deviceType = 'computer') {
+  if (!liveViewUrl || !hostId || hostId === 'pending') return
   const baseUrl =
     process.env.CHAT_BRIDGE_HTTP_URL ||
     process.env.CHAT_BRIDGE_URL ||
@@ -953,7 +953,7 @@ async function emitDeviceLiveView(noVncUrl, relayUrl, deviceType = 'computer') {
     const sessionPrefix = isMobile ? 'mobile' : isBrowser ? 'browser' : 'local'
     const payload = {
       sessionId: `${sessionPrefix}-screen-${hostId}`,
-      noVncUrl,
+      liveViewUrl,
       deviceType,
       width: isMobile ? 720 : isBrowser ? 1280 : 1920,
       height: isMobile ? 1280 : isBrowser ? 800 : 1080,
@@ -976,7 +976,7 @@ async function emitDeviceLiveView(noVncUrl, relayUrl, deviceType = 'computer') {
       signal: AbortSignal.timeout(5000),
     })
     if (resp.ok) {
-      log(chalk.green(`[screen] Emitted device:liveview → ${noVncUrl.replace(/password=[^&]+/, 'password=***')}${relayUrl ? ' (relay: ' + relayUrl + ')' : ''}`))
+      log(chalk.green(`[screen] Emitted device:liveview → ${liveViewUrl.replace(/password=[^&]+/, 'password=***')}${relayUrl ? ' (relay: ' + relayUrl + ')' : ''}`))
     } else {
       log(chalk.yellow(`[screen] device:liveview HTTP ${resp.status}`))
     }
@@ -2812,7 +2812,7 @@ function stopRegistryHeartbeat() {
 // ── Local Device Connection (file system access for Workspace Panel) ───────
 // Second WebSocket to Chat Bridge /local-agent — registers as a local device
 // so the web UI can browse local files via Workspace Panel.
-// Uses the same protocol as Adam Desktop (tool_request/tool_response).
+// Uses the same protocol as User Computer Host (tool_request/tool_response).
 
 let deviceWsRef = null
 
@@ -3082,7 +3082,7 @@ function connectLocalDevice() {
 
 /**
  * Execute a local tool request (file operations, shell commands).
- * Same capabilities as Adam Desktop's localTools.
+ * Same capabilities as User Computer Host localTools.
  */
 async function executeLocalTool(toolName, params) {
   const fs = await import('fs/promises')
