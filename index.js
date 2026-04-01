@@ -2424,7 +2424,9 @@ async function handleMessage(message) {
     return
   }
 
-  log(chalk.gray(`Ignoring message type: ${type}`))
+  if (type !== 'ide_presence') {
+    log(chalk.gray(`Ignoring message type: ${type}`))
+  }
 }
 
 // ── Token refresh on 1008 rejection ───────────────────────────────────────
