@@ -742,81 +742,69 @@ async function buildAgentSystemPrompt() {
 }
 
 /**
- * Build MCP config for this agent and write it to a temp file.
- * Returns the path to the JSON config file, which is passed to
- * `claude -p --mcp-config <path>` at invocation time.
- *
- * This replaces the old `claude mcp add --scope user` approach, which
- * registered MCP servers globally. When multiple agents ran on the same
- * machine, every Claude Code instance saw ALL agents' tools — causing
- * identity confusion (e.g. dario-amodei could accidentally call tessa's
- * MCP tools, which would fail access control checks).
+ * Register VO MCP server with Claude Code using `claude mcp add`.
+ * This is the correct way per https://code.claude.com/docs/en/mcp
+ * The server is registered locally and `claude -p` auto-loads it.
  */
-function buildMcpConfig() {
+async function registerMcpServer() {
   try {
     const agentHandle = argv.agent
     const officeId = agentHandle.split('.').slice(1).join('.')
+    // Use the lightweight MCP server bundled with the npm package.
+    // It fetches tool schemas from Chat Bridge and proxies all calls via HTTP,
+    // so it doesn't need the 150+ monorepo files that the full MCP server requires.
     const mcpServerPath = path.resolve(__dirname, 'mcp-server-lite.cjs')
 
     const chatBridgeUrl = process.env.CHAT_BRIDGE_URL ||
       process.env.CHAT_BRIDGE_BASE_URL ||
       'https://chatbridge.aladdinagi.xyz'
 
+    // Use agent-specific MCP name to avoid conflicts when multiple agents run
     const mcpName = `vo-${agentHandle.split('.')[0]}`
 
-    const config = {
-      mcpServers: {
-        [mcpName]: {
-          type: 'stdio',
-          command: 'node',
-          args: [mcpServerPath],
-          env: {
-            CHAT_BRIDGE_URL: chatBridgeUrl,
-            CANONICAL_AGENT_HANDLE: agentHandle,
-            REGISTRY_OFFICE_ID: officeId,
-            WORKSPACE_ROOT: workspace,
-          },
-        },
-      },
-    }
+    // Remove existing (idempotent)
+    // 🔧 Use async exec instead of execSync to avoid blocking the event loop.
+    // execSync freezes the event loop for up to 10s, preventing WebSocket pong
+    // responses. Node.js processes timer callbacks (heartbeat) before I/O
+    // callbacks (pong) after unblock, so the heartbeat sees isAlive=false and
+    // terminates the connection — causing an infinite reconnection loop.
+    try {
+      await execAsync(`claude mcp remove ${mcpName}`, { timeout: 5000 })
+    } catch { /* ignore — might not exist */ }
 
-    const configPath = path.join(os.tmpdir(), `vo-mcp-${mcpName}.json`)
-    fs.writeFileSync(configPath, JSON.stringify(config, null, 2))
-    log(chalk.green(`MCP config written to ${configPath}`))
-    return configPath
+    // Register using `claude mcp add-json --scope user` — the only scope that works
+    // with `claude -p` headless mode. Per-agent name avoids conflicts.
+    const serverConfig = JSON.stringify({
+      type: 'stdio',
+      command: 'node',
+      args: [mcpServerPath],
+      env: {
+        CHAT_BRIDGE_URL: chatBridgeUrl,
+        CANONICAL_AGENT_HANDLE: agentHandle,
+        REGISTRY_OFFICE_ID: officeId,
+        WORKSPACE_ROOT: workspace,
+      },
+    })
+
+    await execAsync(`claude mcp add-json ${mcpName} '${serverConfig.replace(/'/g, "'\\''")}' --scope user`, {
+      timeout: 10000,
+    })
+    log(chalk.green(`MCP server '${mcpName}' registered (--scope user)`))
+    return mcpName
   } catch (err) {
-    log(chalk.yellow(`Failed to build MCP config: ${err.message}`))
-    return null
+    log(chalk.yellow(`Failed to register MCP server: ${err.message}`))
+    return false
   }
 }
 
 /**
- * Clean up stale vo-* MCP servers that were registered globally by the old
- * --scope user approach. This is a migration helper — once all agents have
- * restarted with the new --mcp-config approach, this becomes a no-op.
+ * Unregister VO MCP server on clock-out.
  */
-async function cleanupGlobalMcpServers() {
-  const mcpName = `vo-${argv.agent.split('.')[0]}`
-  try {
-    await execAsync(`claude mcp remove ${mcpName}`, { timeout: 5000 })
-    log(chalk.dim(`Cleaned up global MCP server '${mcpName}'`))
-  } catch { /* ignore — might not exist */ }
-}
-
-/**
- * Clean up MCP config temp file and any stale global registration on clock-out.
- */
-function cleanupMcpConfig() {
+function unregisterMcpServer() {
   try {
     const mcpName = `vo-${argv.agent.split('.')[0]}`
-    // Remove temp config file
-    const configPath = path.join(os.tmpdir(), `vo-mcp-${mcpName}.json`)
-    if (fs.existsSync(configPath)) {
-      fs.unlinkSync(configPath)
-      log(chalk.dim(`MCP config '${configPath}' removed`))
-    }
-    // Also remove any stale global registration (migration cleanup)
     execSync(`claude mcp remove ${mcpName}`, { stdio: 'ignore', timeout: 5000 })
+    log(chalk.dim(`MCP server '${mcpName}' unregistered`))
   } catch { /* ignore */ }
 }
 
@@ -1463,12 +1451,9 @@ async function handleMessage(message) {
     if (promptToInject) {
       args.push('--append-system-prompt', promptToInject)
     }
-    // MCP: pass agent-specific config via --mcp-config so each agent only sees
-    // its own tools. This prevents identity confusion when multiple agents run
-    // on the same machine (each agent's MCP server carries its own agentHandle).
-    if (mcpConfigPath) {
-      args.push('--mcp-config', mcpConfigPath)
-    }
+    // MCP: no --mcp-config flag needed. The VO MCP server is registered via
+    // `claude mcp add` during clock-in, so `claude -p` auto-loads it.
+    // See: https://code.claude.com/docs/en/mcp
     // User message as last positional argument.
     // '--' stops the arg parser from treating messages starting with '-' as flags
     // (e.g. "-用户授权 OAuth..." was parsed as unknown option, crashing the CLI).
@@ -2591,12 +2576,12 @@ function connect() {
     if (!cachedSystemPrompt) {
       cachedSystemPrompt = await buildAgentSystemPrompt()
     }
-    // Build per-agent MCP config file (passed via --mcp-config at invocation time).
-    // This replaced global `claude mcp add --scope user` which leaked tools across agents.
+    // Register MCP server via `claude mcp add` (the official way)
+    // This makes VO tools auto-available in all `claude -p` invocations
+    let mcpRegistered = false
     if (!mcpConfigPath) {
-      mcpConfigPath = buildMcpConfig()
-      // Clean up any stale global MCP registrations from the old approach
-      await cleanupGlobalMcpServers()
+      mcpRegistered = await registerMcpServer()
+      if (mcpRegistered) mcpConfigPath = 'registered'  // flag to skip re-registration
     }
 
     // ── Local screen sharing (macOS VNC → noVNC in Computer tab) ──────────
@@ -3612,9 +3597,9 @@ function shutdown() {
   console.log('')
   console.log(chalk.dim('  Visit ') + chalk.cyan.underline('https://office.xyz') + chalk.dim(' to manage your agents'))
   console.log('')
-  // Stop registry heartbeat and clean up MCP config
+  // Stop registry heartbeat and unregister MCP server
   stopRegistryHeartbeat()
-  cleanupMcpConfig()
+  unregisterMcpServer()
   for (const [, entry] of activeChildren) {
     try { entry?.child?.kill('SIGTERM') } catch { /* ignore */ }
   }
