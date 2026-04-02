@@ -1549,6 +1549,10 @@ async function handleMessage(message) {
     const completedToolActions = []
     const activeThinkingByIndex = new Map()
     const completedThinkingBlocks = []
+    // 🎬 Phase 2: Track text blocks for content_block lifecycle events
+    // Enables frontend to know exactly when text/tool transitions happen
+    // instead of guessing with timeouts.
+    const activeTextBlocksByIndex = new Map() // blockIndex → { blockId }
 
     // 🚀 PERF v2: thinking_delta is no longer sent to frontend.
     // Only thinking_start and thinking_end are transmitted.
@@ -1765,6 +1769,25 @@ async function handleMessage(message) {
             return
           }
 
+          // 🎬 Phase 2: Text block lifecycle — emit streaming.block_start so frontend
+          // knows exactly when text output begins/ends instead of guessing with timeouts.
+          if (block?.type === 'text') {
+            const blockId = `text-${now}-${Math.random().toString(36).slice(2, 8)}`
+            if (blockIndex !== null) {
+              activeTextBlocksByIndex.set(blockIndex, { blockId, startedAt: now })
+            }
+            sendJSON({
+              type: 'streaming.block_start',
+              sessionId,
+              commandId,
+              blockType: 'text',
+              blockId,
+              blockIndex: blockIndex ?? undefined,
+              timestamp: now,
+            })
+            return
+          }
+
           // All tool-like block types: tool_use (client), server_tool_use (Anthropic server),
           // mcp_tool_use, and result blocks that appear as content_block_start in stream-json.
           // The original Claude CLI sets "tool-input" spinner state for all of these.
@@ -1831,6 +1854,22 @@ async function handleMessage(message) {
                 elapsedMs,
               })
               activeThinkingByIndex.delete(blockIndex)
+              return
+            }
+
+            // 🎬 Phase 2: Text block stop
+            const textState = activeTextBlocksByIndex.get(blockIndex)
+            if (textState) {
+              sendJSON({
+                type: 'streaming.block_stop',
+                sessionId,
+                commandId,
+                blockType: 'text',
+                blockId: textState.blockId,
+                blockIndex,
+                timestamp: now,
+              })
+              activeTextBlocksByIndex.delete(blockIndex)
               return
             }
 
@@ -2961,8 +3000,8 @@ function connectLocalDevice() {
   deviceWsRef = dws
 
   const DEVICE_PING_INTERVAL_MS = 15_000   // align with main WS heartbeat cadence
-  const DEVICE_PONG_TIMEOUT_MS = 10_000
-  let deviceIsAlive = false
+  const DEVICE_MAX_MISSED_PONGS = 2        // tolerate up to 2 missed pongs (30s) before terminating
+  let deviceMissedPongs = 0
 
   const stopDeviceHeartbeat = () => {
     if (devicePingTimer) { clearInterval(devicePingTimer); devicePingTimer = null }
@@ -3003,6 +3042,7 @@ function connectLocalDevice() {
     // Heartbeat: ping + pong timeout detection
     stopDeviceHeartbeat()
     let deviceLastPingTime = Date.now()
+    deviceMissedPongs = 0
     devicePingTimer = setInterval(() => {
       if (dws.readyState !== WebSocket.OPEN) { stopDeviceHeartbeat(); return }
       const now = Date.now()
@@ -3017,17 +3057,17 @@ function connectLocalDevice() {
         return
       }
 
-      if (!deviceIsAlive) {
-        log(chalk.red('[device] Heartbeat timeout — no pong received, forcing reconnect'))
+      deviceMissedPongs++
+      if (deviceMissedPongs > DEVICE_MAX_MISSED_PONGS) {
+        log(chalk.red(`[device] Heartbeat timeout — ${deviceMissedPongs} missed pongs, forcing reconnect`))
         stopDeviceHeartbeat()
         try { dws.terminate() } catch { /* ignore */ }
         return
       }
-      deviceIsAlive = false
       try { dws.ping() } catch { /* ignore */ }
     }, DEVICE_PING_INTERVAL_MS)
 
-    dws.on('pong', () => { deviceIsAlive = true })
+    dws.on('pong', () => { deviceMissedPongs = 0 })
   })
 
   dws.on('message', async (data) => {
