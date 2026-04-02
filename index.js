@@ -2498,8 +2498,8 @@ function connect() {
   const ws = new WebSocket(managerUrl.href)
   wsRef = ws
 
-  const PING_INTERVAL_MS = 25_000   // matches server-side CLIENT_PING_INTERVAL_MS
-  const MAX_MISSED_PONGS = 3        // tolerate up to 3 missed pongs (75s) before terminating
+  const PING_INTERVAL_MS = 15_000   // matches server-side CLIENT_PING_INTERVAL_MS (15s)
+  const MAX_MISSED_PONGS = 2        // matches server-side CLIENT_MAX_MISSED_PONGS (30s timeout)
   let pingTimer = null
   let missedPongs = 0
 
@@ -2960,7 +2960,7 @@ function connectLocalDevice() {
   const dws = new WebSocket(deviceUrl)
   deviceWsRef = dws
 
-  const DEVICE_PING_INTERVAL_MS = 25_000
+  const DEVICE_PING_INTERVAL_MS = 15_000   // align with main WS heartbeat cadence
   const DEVICE_PONG_TIMEOUT_MS = 10_000
   let deviceIsAlive = false
 
