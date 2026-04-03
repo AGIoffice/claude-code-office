@@ -25,31 +25,66 @@ import crypto from 'crypto'
 import path from 'path'
 import os from 'os'
 import { fileURLToPath } from 'url'
-import { startMobileScreenBridge, stopAllMobileScreenBridges, getMobileScreenBridge } from './mobile-screen-bridge.js'
-import { startLocalBrowserBridge, stopLocalBrowserBridge, getLocalBrowserBridge, killLocalChrome } from './local-browser-bridge.js'
+import {
+  startMobileScreenBridge,
+  stopAllMobileScreenBridges,
+  getMobileScreenBridge,
+} from './mobile-screen-bridge.js'
+import {
+  startLocalBrowserBridge,
+  stopLocalBrowserBridge,
+  getLocalBrowserBridge,
+  killLocalChrome,
+} from './local-browser-bridge.js'
 // Inline tool name normalizer (can't import from parent CJS package — ESM/CJS conflict)
 // Maps raw CLI tool names to standard frontend TOOL_CONFIG keys
 const TOOL_NAME_MAP = {
   // Codex CLI
-  command_execution: 'Bash', file_edit: 'FileEdit', file_read: 'FileRead',
-  file_change: 'FileEdit', file_write: 'FileWrite', web_search: 'WebSearch',
-  mcp_call: 'Mcp', mcp_tool_call: 'Mcp', unknown_tool: 'default',
+  command_execution: 'Bash',
+  file_edit: 'FileEdit',
+  file_read: 'FileRead',
+  file_change: 'FileEdit',
+  file_write: 'FileWrite',
+  web_search: 'WebSearch',
+  mcp_call: 'Mcp',
+  mcp_tool_call: 'Mcp',
+  unknown_tool: 'default',
   // Gemini CLI
-  shell: 'Bash', edit: 'Edit', read: 'Read', write: 'Write',
-  search_files: 'Grep', list_files: 'LS', web_fetch: 'WebFetch', google_search: 'WebSearch',
+  shell: 'Bash',
+  edit: 'Edit',
+  read: 'Read',
+  write: 'Write',
+  search_files: 'Grep',
+  list_files: 'LS',
+  web_fetch: 'WebFetch',
+  google_search: 'WebSearch',
   // Kimi / DeepSeek / Qwen CLI
-  execute_command: 'Bash', read_file: 'Read', write_file: 'Write', edit_file: 'Edit',
-  search: 'Grep', run_command: 'Bash', code_edit: 'FileEdit', code_search: 'Grep',
-  terminal: 'Bash', file_operation: 'FileEdit',
+  execute_command: 'Bash',
+  read_file: 'Read',
+  write_file: 'Write',
+  edit_file: 'Edit',
+  search: 'Grep',
+  run_command: 'Bash',
+  code_edit: 'FileEdit',
+  code_search: 'Grep',
+  terminal: 'Bash',
+  file_operation: 'FileEdit',
   // Claude server-side tools (content_block type → display name)
-  server_tool_use: 'ServerTool', web_search_tool_result: 'WebSearch',
-  web_fetch_tool_result: 'WebFetch', code_execution_tool_result: 'CodeExecution',
-  mcp_tool_use: 'Mcp', mcp_tool_result: 'Mcp',
+  server_tool_use: 'ServerTool',
+  web_search_tool_result: 'WebSearch',
+  web_fetch_tool_result: 'WebFetch',
+  code_execution_tool_result: 'CodeExecution',
+  mcp_tool_use: 'Mcp',
+  mcp_tool_result: 'Mcp',
   bash_code_execution_tool_result: 'Bash',
   text_editor_code_execution_tool_result: 'Edit',
-  tool_search_tool_result: 'ToolSearch', container_upload: 'Upload',
+  tool_search_tool_result: 'ToolSearch',
+  container_upload: 'Upload',
   // General aliases
-  bash: 'Bash', grep: 'Grep', glob: 'Glob', ls: 'LS',
+  bash: 'Bash',
+  grep: 'Grep',
+  glob: 'Glob',
+  ls: 'LS',
 }
 function normalizeToolName(rawName) {
   if (!rawName || typeof rawName !== 'string') return 'default'
@@ -126,7 +161,8 @@ const argv = yargs(hideBin(process.argv))
   })
   .option('channel', {
     type: 'string',
-    describe: 'Only show messages from this channel (web, telegram, slack, discord, office, feishu, wechat)',
+    describe:
+      'Only show messages from this channel (web, telegram, slack, discord, office, feishu, wechat)',
   })
   .option('verbose', {
     alias: 'v',
@@ -150,7 +186,8 @@ const PROVIDERS = {
     // --dangerously-skip-permissions = no permission prompts in headless mode
     baseArgs: [
       '-p',
-      '--output-format', 'stream-json',
+      '--output-format',
+      'stream-json',
       '--verbose',
       '--include-partial-messages',
       '--dangerously-skip-permissions',
@@ -184,7 +221,11 @@ const PROVIDERS = {
 
 const providerConfig = PROVIDERS[argv.provider]
 if (!providerConfig) {
-  console.error(chalk.red(`Unknown provider "${argv.provider}". Supported: ${Object.keys(PROVIDERS).join(', ')}`))
+  console.error(
+    chalk.red(
+      `Unknown provider "${argv.provider}". Supported: ${Object.keys(PROVIDERS).join(', ')}`
+    )
+  )
   process.exit(1)
 }
 
@@ -254,7 +295,7 @@ function shellEscapeArg(s) {
 
 // ── Logging ────────────────────────────────────────────────────────────────
 
-let label = argv.agent ? (argv.agent.split('.')[0] || argv.agent) : 'local-host'
+let label = argv.agent ? argv.agent.split('.')[0] || argv.agent : 'local-host'
 
 // Debug log — only shown with --verbose flag (timestamped, dim)
 function log(...args) {
@@ -280,7 +321,9 @@ async function testMcpServer(configPath) {
 
     return new Promise((resolve) => {
       const timeout = setTimeout(() => {
-        try { child.kill() } catch {}
+        try {
+          child.kill()
+        } catch {}
         log(chalk.yellow(`[mcp] Server timed out during pre-test (5s)`))
         resolve(false)
       }, 5000)
@@ -313,7 +356,9 @@ async function testMcpServer(configPath) {
         } else {
           // Still running = good
           clearTimeout(timeout)
-          try { child.kill() } catch {}
+          try {
+            child.kill()
+          } catch {}
           log(chalk.green(`[mcp] Server pre-test passed`))
           resolve(true)
         }
@@ -341,13 +386,13 @@ if (argv.agent) {
 
 let wsRef = null
 let reconnectAttempts = 0
-let tokenRetryAttempted = false  // Track whether we've already retried a 1008 rejection
-let onboardingSeat = null        // Seat assigned during onboarding, passed to clock-in banner
+let tokenRetryAttempted = false // Track whether we've already retried a 1008 rejection
+let onboardingSeat = null // Seat assigned during onboarding, passed to clock-in banner
 let hasShownClockInBanner = false // Prevent duplicate banners
 const MAX_RECONNECT_DELAY_MS = 30_000
-let wakeFromSleep = false        // Set when system wake is detected
+let wakeFromSleep = false // Set when system wake is detected
 let registryHeartbeatTimer = null
-const REGISTRY_HEARTBEAT_INTERVAL_MS = 30_000  // Report liveness to Registry every 30s
+const REGISTRY_HEARTBEAT_INTERVAL_MS = 30_000 // Report liveness to Registry every 30s
 
 // ── Claude CLI auth health check ─────────────────────────────────────────
 // Track consecutive 403/auth failures from `claude -p`. When threshold is
@@ -355,8 +400,8 @@ const REGISTRY_HEARTBEAT_INTERVAL_MS = 30_000  // Report liveness to Registry ev
 let consecutiveAuthFailures = 0
 let authCheckInProgress = false
 let lastAuthNotificationAt = 0
-const AUTH_FAILURE_THRESHOLD = 2        // trigger check after N consecutive 403s
-const AUTH_NOTIFICATION_COOLDOWN_MS = 5 * 60_000  // don't spam — max once per 5 min
+const AUTH_FAILURE_THRESHOLD = 2 // trigger check after N consecutive 403s
+const AUTH_NOTIFICATION_COOLDOWN_MS = 5 * 60_000 // don't spam — max once per 5 min
 
 async function checkClaudeAuthHealth() {
   if (authCheckInProgress) return
@@ -366,10 +411,15 @@ async function checkClaudeAuthHealth() {
     const { stdout, stderr } = await execAsync('claude auth status 2>&1', {
       timeout: 10_000,
       env: { ...process.env },
-    }).catch(err => ({ stdout: err.stdout || '', stderr: err.stderr || err.message }))
+    }).catch((err) => ({ stdout: err.stdout || '', stderr: err.stderr || err.message }))
     const output = `${stdout}\n${stderr}`.toLowerCase()
-    const isAuthed = output.includes('authenticated') || output.includes('logged in') || output.includes('active')
-    const isExpired = output.includes('expired') || output.includes('not authenticated') || output.includes('not logged in') || output.includes('no active')
+    const isAuthed =
+      output.includes('authenticated') || output.includes('logged in') || output.includes('active')
+    const isExpired =
+      output.includes('expired') ||
+      output.includes('not authenticated') ||
+      output.includes('not logged in') ||
+      output.includes('no active')
 
     if (isExpired || !isAuthed) {
       log(chalk.red('[auth-health] Claude CLI session is expired or invalid'))
@@ -384,7 +434,8 @@ async function checkClaudeAuthHealth() {
             type: 'system_notification',
             level: 'error',
             title: 'Claude CLI Authentication Expired',
-            message: '⚠️ Claude CLI 登录已过期，请在终端运行 `claude login` 重新认证。在此之前我无法处理消息。',
+            message:
+              '⚠️ Claude CLI 登录已过期，请在终端运行 `claude login` 重新认证。在此之前我无法处理消息。',
             agentHandle: argv.agent,
             timestamp: new Date().toISOString(),
           }
@@ -436,8 +487,8 @@ function onSuccessfulResponse() {
 let gracefulDisconnect = false
 let gracefulKillTimer = null
 const pendingSendBuffer = []
-const GRACEFUL_RECONNECT_TIMEOUT_MS = 60_000  // Kill children if reconnect takes >60s
-const MAX_PENDING_BUFFER = 1000               // Safety cap on buffered events
+const GRACEFUL_RECONNECT_TIMEOUT_MS = 60_000 // Kill children if reconnect takes >60s
+const MAX_PENDING_BUFFER = 1000 // Safety cap on buffered events
 // ── Workspace: ensure a git-enabled working directory ─────────────────────
 // If the current directory isn't a git repo, create ~/Office.xyz/ and init git
 // so that server-side git probes (status, log, diff) work out of the box.
@@ -445,7 +496,7 @@ const workspace = (() => {
   const raw = path.resolve(argv.workspace)
   try {
     execSync('git rev-parse --is-inside-work-tree', { cwd: raw, stdio: 'pipe' })
-    return raw  // already a git repo
+    return raw // already a git repo
   } catch {
     // Not a git repo — create a dedicated workspace
     const officeDir = path.join(os.homedir(), 'Office.xyz')
@@ -470,7 +521,10 @@ const model = argv.model || providerConfig.defaultModel
 // --resume and --append-system-prompt coexist fine, so resumed sessions
 // still pick up fresh system prompts and MCP tools (registered globally).
 const SESSION_MAP_DIR = path.join(os.homedir(), '.claude')
-const SESSION_MAP_FILE = path.join(SESSION_MAP_DIR, `vo-sessions-${(argv.agent || 'pending').replace(/\./g, '-')}.json`)
+const SESSION_MAP_FILE = path.join(
+  SESSION_MAP_DIR,
+  `vo-sessions-${(argv.agent || 'pending').replace(/\./g, '-')}.json`
+)
 const sessionMap = new Map()
 
 // Load persisted sessions from previous clock-in (if any)
@@ -481,7 +535,9 @@ try {
   const entries = Array.isArray(parsed) ? parsed : Object.entries(parsed)
   for (const [k, v] of entries) sessionMap.set(k, v)
   log(chalk.dim(`Restored ${sessionMap.size} session mapping(s) from previous clock-in`))
-} catch { /* no file or invalid — start fresh */ }
+} catch {
+  /* no file or invalid — start fresh */
+}
 
 /** Persist session map to disk (fire-and-forget) */
 function persistSessionMap() {
@@ -489,7 +545,11 @@ function persistSessionMap() {
     mkdirSync(SESSION_MAP_DIR, { recursive: true })
     writeFileSync(SESSION_MAP_FILE, JSON.stringify([...sessionMap]), 'utf-8')
   } catch (err) {
-    log(chalk.yellow(`[session] Failed to persist session map to ${SESSION_MAP_FILE}: ${err?.message || err}`))
+    log(
+      chalk.yellow(
+        `[session] Failed to persist session map to ${SESSION_MAP_FILE}: ${err?.message || err}`
+      )
+    )
   }
 }
 
@@ -503,7 +563,9 @@ function loadDeviceId() {
   try {
     if (!existsSync(DEVICE_ID_FILE)) return null
     return readFileSync(DEVICE_ID_FILE, 'utf-8').trim() || null
-  } catch { return null }
+  } catch {
+    return null
+  }
 }
 
 function saveDeviceId(deviceId) {
@@ -532,8 +594,8 @@ const sessionJustReplaced = new Map()
 // Tracks timestamp of last fetch per session to avoid repeated slow requests within
 // the same turn, while still allowing re-fetch on subsequent turns (e.g. after
 // resume failure → retry → next user message).
-const sessionHistoryLastFetched = new Map()  // sessionId → timestamp
-const HISTORY_REFETCH_COOLDOWN_MS = 30_000   // Don't re-fetch within 30s of last fetch
+const sessionHistoryLastFetched = new Map() // sessionId → timestamp
+const HISTORY_REFETCH_COOLDOWN_MS = 30_000 // Don't re-fetch within 30s of last fetch
 
 /**
  * Parse a VO sessionId (agentId--userId--conversationId) into parts.
@@ -550,7 +612,9 @@ function parseSessionId(sessionId) {
 }
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
-function isUUID(s) { return typeof s === 'string' && UUID_RE.test(s) }
+function isUUID(s) {
+  return typeof s === 'string' && UUID_RE.test(s)
+}
 
 /**
  * Fetch conversation history from Chat Bridge for a given session.
@@ -582,13 +646,18 @@ async function fetchHistoryForPrompt(sessionId, metadata = {}) {
 
   // Resolve conversationId: prefer metadata (original), fall back to sessionId parse
   const parsed = parseSessionId(sessionId)
-  const conversationId = metadata.conversationId || (isUUID(parsed.conversationId) ? parsed.conversationId : null)
+  const conversationId =
+    metadata.conversationId || (isUUID(parsed.conversationId) ? parsed.conversationId : null)
 
   // ── Primary path: fetch messages directly by conversationId ──────────────
   if (conversationId) {
     try {
       const url = `${chatBridgeUrl}/api/conversations/${encodeURIComponent(conversationId)}/messages?limit=80`
-      log(chalk.gray(`[history-sync] Fetching messages for conversation ${conversationId.slice(0, 8)}...`))
+      log(
+        chalk.gray(
+          `[history-sync] Fetching messages for conversation ${conversationId.slice(0, 8)}...`
+        )
+      )
       const response = await fetch(url, {
         headers: { Accept: 'application/json' },
         signal: AbortSignal.timeout(5000),
@@ -598,11 +667,19 @@ async function fetchHistoryForPrompt(sessionId, metadata = {}) {
         const messages = Array.isArray(data.messages) ? data.messages : []
         const result = formatHistoryForPrompt(messages)
         if (result) {
-          log(chalk.green(`[history-sync] Loaded ${messages.length} messages from conversation ${conversationId.slice(0, 8)}`))
+          log(
+            chalk.green(
+              `[history-sync] Loaded ${messages.length} messages from conversation ${conversationId.slice(0, 8)}`
+            )
+          )
           return result
         }
       } else if (response.status === 404) {
-        log(chalk.gray(`[history-sync] Conversation ${conversationId.slice(0, 8)} not in DB yet (new conversation)`))
+        log(
+          chalk.gray(
+            `[history-sync] Conversation ${conversationId.slice(0, 8)} not in DB yet (new conversation)`
+          )
+        )
       }
     } catch (error) {
       log(chalk.yellow(`[history-sync] Primary fetch failed: ${error?.message || error}`))
@@ -616,7 +693,11 @@ async function fetchHistoryForPrompt(sessionId, metadata = {}) {
     try {
       const listParams = new URLSearchParams({ userId, limit: '1' })
       const listUrl = `${chatBridgeUrl}/api/agents/${encodeURIComponent(agentHandle)}/conversations?${listParams}`
-      log(chalk.gray(`[history-sync] Falling back to conversation list for ${agentHandle}/${userId.slice(0, 20)}...`))
+      log(
+        chalk.gray(
+          `[history-sync] Falling back to conversation list for ${agentHandle}/${userId.slice(0, 20)}...`
+        )
+      )
       const listResponse = await fetch(listUrl, {
         headers: { Accept: 'application/json' },
         signal: AbortSignal.timeout(5000),
@@ -636,7 +717,11 @@ async function fetchHistoryForPrompt(sessionId, metadata = {}) {
             const messages = Array.isArray(msgData.messages) ? msgData.messages : []
             const result = formatHistoryForPrompt(messages)
             if (result) {
-              log(chalk.green(`[history-sync] Loaded ${messages.length} messages via fallback (conv ${latestConvId.slice(0, 8)})`))
+              log(
+                chalk.green(
+                  `[history-sync] Loaded ${messages.length} messages via fallback (conv ${latestConvId.slice(0, 8)})`
+                )
+              )
               return result
             }
           }
@@ -659,11 +744,14 @@ function formatHistoryForPrompt(messages) {
   if (!Array.isArray(messages) || messages.length === 0) return ''
 
   const turns = messages
-    .filter(msg => msg.content && ['user', 'assistant'].includes(msg.role))
+    .filter((msg) => msg.content && ['user', 'assistant'].includes(msg.role))
     .slice(-40) // Keep last 40 turns to avoid token overflow
-    .map(msg => `${msg.role === 'user' ? 'Human' : 'Assistant'}: ${
-      typeof msg.content === 'string' ? msg.content.slice(0, 2000) : '[complex content]'
-    }`)
+    .map(
+      (msg) =>
+        `${msg.role === 'user' ? 'Human' : 'Assistant'}: ${
+          typeof msg.content === 'string' ? msg.content.slice(0, 2000) : '[complex content]'
+        }`
+    )
 
   if (turns.length === 0) return ''
 
@@ -674,9 +762,9 @@ function formatHistoryForPrompt(messages) {
 // Built on connect, cached for the lifetime of the connection.
 let cachedSystemPrompt = null
 let mcpConfigPath = null
-let vncBridge = null  // { url, port, stop, restart } — auto-started VNC bridge (forked process)
-let vncBridgeWorker = null  // child_process handle for the forked vnc-bridge worker
-let vncLiveviewTimer = null  // periodic re-emission of device:liveview
+let vncBridge = null // { url, port, stop, restart } — auto-started VNC bridge (forked process)
+let vncBridgeWorker = null // child_process handle for the forked vnc-bridge worker
+let vncLiveviewTimer = null // periodic re-emission of device:liveview
 
 /**
  * Build the system prompt by fetching from Chat Bridge.
@@ -702,10 +790,13 @@ async function buildAgentSystemPrompt() {
     const controller = new AbortController()
     const timeout = setTimeout(() => controller.abort(), 8000)
 
-    const res = await fetch(`${chatBridgeUrl}/api/cli/system-prompt/${encodeURIComponent(agentHandle)}`, {
-      signal: controller.signal,
-      headers: { 'Accept': 'application/json' },
-    })
+    const res = await fetch(
+      `${chatBridgeUrl}/api/cli/system-prompt/${encodeURIComponent(agentHandle)}`,
+      {
+        signal: controller.signal,
+        headers: { Accept: 'application/json' },
+      }
+    )
     clearTimeout(timeout)
 
     if (res.ok) {
@@ -755,7 +846,8 @@ async function registerMcpServer() {
     // so it doesn't need the 150+ monorepo files that the full MCP server requires.
     const mcpServerPath = path.resolve(__dirname, 'mcp-server-lite.cjs')
 
-    const chatBridgeUrl = process.env.CHAT_BRIDGE_URL ||
+    const chatBridgeUrl =
+      process.env.CHAT_BRIDGE_URL ||
       process.env.CHAT_BRIDGE_BASE_URL ||
       'https://chatbridge.aladdinagi.xyz'
 
@@ -770,7 +862,9 @@ async function registerMcpServer() {
     // terminates the connection — causing an infinite reconnection loop.
     try {
       await execAsync(`claude mcp remove ${mcpName}`, { timeout: 5000 })
-    } catch { /* ignore — might not exist */ }
+    } catch {
+      /* ignore — might not exist */
+    }
 
     // Register using `claude mcp add-json --scope user` — the only scope that works
     // with `claude -p` headless mode. Per-agent name avoids conflicts.
@@ -786,9 +880,12 @@ async function registerMcpServer() {
       },
     })
 
-    await execAsync(`claude mcp add-json ${mcpName} '${serverConfig.replace(/'/g, "'\\''")}' --scope user`, {
-      timeout: 10000,
-    })
+    await execAsync(
+      `claude mcp add-json ${mcpName} '${serverConfig.replace(/'/g, "'\\''")}' --scope user`,
+      {
+        timeout: 10000,
+      }
+    )
     log(chalk.green(`MCP server '${mcpName}' registered (--scope user)`))
     return mcpName
   } catch (err) {
@@ -805,7 +902,9 @@ function unregisterMcpServer() {
     const mcpName = `vo-${argv.agent.split('.')[0]}`
     execSync(`claude mcp remove ${mcpName}`, { stdio: 'ignore', timeout: 5000 })
     log(chalk.dim(`MCP server '${mcpName}' unregistered`))
-  } catch { /* ignore */ }
+  } catch {
+    /* ignore */
+  }
 }
 
 // ── Channel resolution ─────────────────────────────────────────────────────
@@ -828,10 +927,20 @@ function resolveChannel(message) {
   if (source.includes('slack')) {
     const channel = meta.slack?.channelId || platformInfo.channelId || ''
     const user = meta.slack?.username || 'user'
-    return { type: 'Slack', color: 'magenta', sender: channel ? `#${channel} — ${user}` : user, chatId: null }
+    return {
+      type: 'Slack',
+      color: 'magenta',
+      sender: channel ? `#${channel} — ${user}` : user,
+      chatId: null,
+    }
   }
   if (source.includes('discord')) {
-    return { type: 'Discord', color: 'blueBright', sender: meta.discord?.username || 'user', chatId: null }
+    return {
+      type: 'Discord',
+      color: 'blueBright',
+      sender: meta.discord?.username || 'user',
+      chatId: null,
+    }
   }
   if (source.includes('feishu') || source.includes('lark')) {
     return { type: 'Feishu', color: 'cyan', sender: meta.feishu?.username || 'user', chatId: null }
@@ -842,7 +951,12 @@ function resolveChannel(message) {
   }
   if (sessionId.includes('office-wide')) {
     const senderParts = sessionId.split('--')
-    return { type: 'Office Chat', color: 'greenBright', sender: senderParts[0] || 'colleague', chatId: null }
+    return {
+      type: 'Office Chat',
+      color: 'greenBright',
+      sender: senderParts[0] || 'colleague',
+      chatId: null,
+    }
   }
   // Default: Web dialog
   const userId = sessionId.split('--')[1] || 'user'
@@ -879,7 +993,10 @@ function startVncBridgeForked(opts, screenRelayUrl) {
 
     let settled = false
     const timeout = setTimeout(() => {
-      if (!settled) { settled = true; reject(new Error('VNC bridge worker timed out')) }
+      if (!settled) {
+        settled = true
+        reject(new Error('VNC bridge worker timed out'))
+      }
     }, 15000)
 
     worker.on('message', (msg) => {
@@ -890,10 +1007,14 @@ function startVncBridgeForked(opts, screenRelayUrl) {
           url: msg.url,
           port: msg.port,
           stop() {
-            try { worker.send({ type: 'stop' }) } catch {}
+            try {
+              worker.send({ type: 'stop' })
+            } catch {}
           },
           restart() {
-            try { worker.send({ type: 'restart', opts }) } catch {}
+            try {
+              worker.send({ type: 'restart', opts })
+            } catch {}
           },
         }
         resolve(bridge)
@@ -918,13 +1039,15 @@ function startVncBridgeForked(opts, screenRelayUrl) {
       if (code !== 0) {
         log(chalk.yellow(`[screen] VNC bridge worker exited (code ${code}), respawning in 5s...`))
         setTimeout(() => {
-          startVncBridgeForked(opts, screenRelayUrl).then((bridge) => {
-            vncBridge = bridge
-            log(chalk.green(`[screen] VNC bridge respawned on port ${bridge.port}`))
-            emitDeviceLiveView(bridge.url, screenRelayUrl)
-          }).catch((err) => {
-            log(chalk.gray(`[screen] VNC bridge respawn failed: ${err.message}`))
-          })
+          startVncBridgeForked(opts, screenRelayUrl)
+            .then((bridge) => {
+              vncBridge = bridge
+              log(chalk.green(`[screen] VNC bridge respawned on port ${bridge.port}`))
+              emitDeviceLiveView(bridge.url, screenRelayUrl)
+            })
+            .catch((err) => {
+              log(chalk.gray(`[screen] VNC bridge respawn failed: ${err.message}`))
+            })
         }, 5000)
       }
     })
@@ -952,9 +1075,10 @@ async function emitDeviceLiveView(liveViewUrl, relayUrl, deviceType = 'computer'
     const isRelayOnly = isMobile || isBrowser
     const sessionPrefix = isMobile ? 'mobile' : isBrowser ? 'browser' : 'local'
     const payload = {
-      sessionId: `${sessionPrefix}-screen-${hostId}`,
+      sessionId: `${sessionPrefix}-screen-${hostId}-${os.hostname()}`,
       liveViewUrl,
       deviceType,
+      hostname: os.hostname(),
       width: isMobile ? 720 : isBrowser ? 1280 : 1920,
       height: isMobile ? 1280 : isBrowser ? 800 : 1080,
     }
@@ -976,7 +1100,11 @@ async function emitDeviceLiveView(liveViewUrl, relayUrl, deviceType = 'computer'
       signal: AbortSignal.timeout(5000),
     })
     if (resp.ok) {
-      log(chalk.green(`[screen] Emitted device:liveview → ${liveViewUrl.replace(/password=[^&]+/, 'password=***')}${relayUrl ? ' (relay: ' + relayUrl + ')' : ''}`))
+      log(
+        chalk.green(
+          `[screen] Emitted device:liveview → ${liveViewUrl.replace(/password=[^&]+/, 'password=***')}${relayUrl ? ' (relay: ' + relayUrl + ')' : ''}`
+        )
+      )
     } else {
       log(chalk.yellow(`[screen] device:liveview HTTP ${resp.status}`))
     }
@@ -993,14 +1121,44 @@ async function emitDeviceLiveView(liveViewUrl, relayUrl, deviceType = 'computer'
 // ═══════════════════════════════════════════════════════════════════════════
 
 const EXTENSION_TO_LANGUAGE = {
-  js: 'javascript', jsx: 'javascript', ts: 'typescript', tsx: 'typescript',
-  mjs: 'javascript', cjs: 'javascript', py: 'python', rb: 'ruby',
-  go: 'go', rs: 'rust', java: 'java', kt: 'kotlin', swift: 'swift',
-  c: 'c', cpp: 'cpp', h: 'c', hpp: 'cpp', cs: 'csharp', php: 'php',
-  html: 'html', htm: 'html', css: 'css', scss: 'scss', less: 'less',
-  json: 'json', yaml: 'yaml', yml: 'yaml', toml: 'toml', xml: 'xml',
-  md: 'markdown', sql: 'sql', sh: 'shell', bash: 'shell', zsh: 'shell',
-  vue: 'vue', svelte: 'svelte', dockerfile: 'dockerfile', makefile: 'makefile',
+  js: 'javascript',
+  jsx: 'javascript',
+  ts: 'typescript',
+  tsx: 'typescript',
+  mjs: 'javascript',
+  cjs: 'javascript',
+  py: 'python',
+  rb: 'ruby',
+  go: 'go',
+  rs: 'rust',
+  java: 'java',
+  kt: 'kotlin',
+  swift: 'swift',
+  c: 'c',
+  cpp: 'cpp',
+  h: 'c',
+  hpp: 'cpp',
+  cs: 'csharp',
+  php: 'php',
+  html: 'html',
+  htm: 'html',
+  css: 'css',
+  scss: 'scss',
+  less: 'less',
+  json: 'json',
+  yaml: 'yaml',
+  yml: 'yaml',
+  toml: 'toml',
+  xml: 'xml',
+  md: 'markdown',
+  sql: 'sql',
+  sh: 'shell',
+  bash: 'shell',
+  zsh: 'shell',
+  vue: 'vue',
+  svelte: 'svelte',
+  dockerfile: 'dockerfile',
+  makefile: 'makefile',
 }
 
 function detectLanguageFromPath(filePath) {
@@ -1046,7 +1204,7 @@ function _flushWorkspaceEvents() {
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ agentId: hostId, events }),
     signal: AbortSignal.timeout(5000),
-  }).catch(err => {
+  }).catch((err) => {
     // Best-effort — don't break the agent if Chat Bridge is unreachable
     log(chalk.yellow(`[workspace-event] flush failed: ${err?.message || err}`))
   })
@@ -1138,7 +1296,7 @@ function emitDocUpdateEvent(filePath, content, isWriting = true) {
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ agentId: hostId, events: [event] }),
     signal: AbortSignal.timeout(5000),
-  }).catch(err => {
+  }).catch((err) => {
     log(chalk.yellow(`[workspace-event] doc:update flush failed: ${err?.message || err}`))
   })
 }
@@ -1297,7 +1455,10 @@ async function handleMessage(message) {
           if (!b64) continue
           const mime = img.mimeType || img.media_type || 'image/png'
           const ext = mime.split('/')[1] || 'png'
-          const fpath = path.join(tmpDir, `image-${Date.now()}-${Math.random().toString(36).slice(2)}.${ext}`)
+          const fpath = path.join(
+            tmpDir,
+            `image-${Date.now()}-${Math.random().toString(36).slice(2)}.${ext}`
+          )
           writeFileSync(fpath, Buffer.from(b64, 'base64'))
           attachmentPaths.push(fpath)
           log(chalk.cyan(`[attach] Saved image → ${fpath}`))
@@ -1335,7 +1496,7 @@ async function handleMessage(message) {
     // Append file paths to user message so Claude Code knows about them
     if (attachmentPaths.length) {
       const fileRefs = attachmentPaths
-        .map(p => p.startsWith('URL:') ? p : `File: ${p}`)
+        .map((p) => (p.startsWith('URL:') ? p : `File: ${p}`))
         .join('\n')
       text = text
         ? `${text}\n\n[Attached files — use the Read tool to view them]\n${fileRefs}`
@@ -1369,7 +1530,11 @@ async function handleMessage(message) {
         reason: 'replaced-by-new-message',
         abortedAt: new Date().toISOString(),
       })
-      try { prev.child.kill('SIGTERM') } catch { /* ignore */ }
+      try {
+        prev.child.kill('SIGTERM')
+      } catch {
+        /* ignore */
+      }
       activeChildren.delete(sessionId)
       // Mark this session as just-replaced so we can ignore the stale stopCommand
       // that the frontend may send for the old command (arrives after the new one starts).
@@ -1428,7 +1593,7 @@ async function handleMessage(message) {
     if (historyContext) {
       promptToInject += historyContext
     }
-    
+
     // Append local environment context so agent knows it's running on the user's machine
     promptToInject += `\n\n## Local Environment`
     promptToInject += `\nYou are running LOCALLY on the user's physical machine (not in the cloud).`
@@ -1445,9 +1610,13 @@ async function handleMessage(message) {
       promptToInject += `\n\n## Current Platform\nYou are responding via ${clientLabel}.`
       if (platformInfo.chatId) promptToInject += ` Chat ID: ${platformInfo.chatId}.`
       if (platformInfo.platformContext) promptToInject += `\n${platformInfo.platformContext}`
-      info(chalk.dim(`[platform] ${platformInfo.clientType}${platformInfo.chatId ? ` (chat: ${platformInfo.chatId})` : ''}`))
+      info(
+        chalk.dim(
+          `[platform] ${platformInfo.clientType}${platformInfo.chatId ? ` (chat: ${platformInfo.chatId})` : ''}`
+        )
+      )
     }
-    
+
     if (promptToInject) {
       args.push('--append-system-prompt', promptToInject)
     }
@@ -1461,7 +1630,9 @@ async function handleMessage(message) {
     // Pre-build args without --resume for use in retry (remove resumeFlag + its value).
     // If resume fails (expired session → exit code 1), we retry with these args.
     const argsWithoutResume = attemptedResume
-      ? args.filter((a, i, arr) => a !== providerConfig.resumeFlag && arr[i - 1] !== providerConfig.resumeFlag)
+      ? args.filter(
+          (a, i, arr) => a !== providerConfig.resumeFlag && arr[i - 1] !== providerConfig.resumeFlag
+        )
       : null
     let sessionRetried = false
 
@@ -1523,14 +1694,24 @@ async function handleMessage(message) {
         // because multiple stale stops can arrive in the same tick.
         sessionJustReplaced.set(sessionId, commandId)
         setTimeout(() => {
-          if (sessionJustReplaced.has(sessionId) && sessionJustReplaced.get(sessionId) === commandId) {
+          if (
+            sessionJustReplaced.has(sessionId) &&
+            sessionJustReplaced.get(sessionId) === commandId
+          ) {
             sessionJustReplaced.delete(sessionId)
           }
         }, 5000)
       }
     } catch (err) {
       log(chalk.red(`Failed to spawn CLI: ${err.message}`))
-      sendJSON({ type: 'result', sessionId, commandId, stdout: '', stderr: `Failed to start ${argv.provider}: ${err.message}`, exitCode: 1 })
+      sendJSON({
+        type: 'result',
+        sessionId,
+        commandId,
+        stdout: '',
+        stderr: `Failed to start ${argv.provider}: ${err.message}`,
+        exitCode: 1,
+      })
       return
     }
 
@@ -1538,10 +1719,10 @@ async function handleMessage(message) {
     const rl = createInterface({ input: child.stdout })
     let fullText = ''
     let resultSessionId = null
-    let isApiError = false  // Track if this session encountered an API/auth error
-    let resultUsage = null       // Token usage from stream-json result event
-    let resultCostUsd = null     // total_cost_usd from result (0 for subscription)
-    let resultModelUsage = null  // Per-model token breakdown from result
+    let isApiError = false // Track if this session encountered an API/auth error
+    let resultUsage = null // Token usage from stream-json result event
+    let resultCostUsd = null // total_cost_usd from result (0 for subscription)
+    let resultModelUsage = null // Per-model token breakdown from result
     let latestRateLimitInfo = null // Rate limit info from rate_limit_event
     const activeToolsByIndex = new Map()
     const activeToolsById = new Map()
@@ -1559,7 +1740,8 @@ async function handleMessage(message) {
     // Text is still accumulated locally in activeThinkingByIndex for completedThinkingBlocks metadata.
 
     const emitToolStart = ({ toolUseId, toolName, input, timestamp }) => {
-      const normalizedId = toolUseId || `tool-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
+      const normalizedId =
+        toolUseId || `tool-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
       const startedAt = Number.isFinite(timestamp) ? timestamp : Date.now()
       // Normalize tool names for consistent frontend display across all CLI providers
       const normalized = normalizeToolName(toolName || 'tool')
@@ -1589,7 +1771,15 @@ async function handleMessage(message) {
       }
     }
 
-    const emitToolEnd = ({ toolUseId, toolName, input, result, error, timestamp, force = false }) => {
+    const emitToolEnd = ({
+      toolUseId,
+      toolName,
+      input,
+      result,
+      error,
+      timestamp,
+      force = false,
+    }) => {
       if (!toolUseId) return
       if (finalizedToolIds.has(toolUseId) && !force) return
       finalizedToolIds.add(toolUseId)
@@ -1630,7 +1820,7 @@ async function handleMessage(message) {
             emitDocUpdateEvent(filePath, content, false)
           } else if (FILE_EDIT_TOOLS.has(resolvedTool)) {
             // Edit/FileEdit — file was modified (try to read final content)
-            readFileContentSafe(filePath).then(finalContent => {
+            readFileContentSafe(filePath).then((finalContent) => {
               if (finalContent !== null) {
                 emitFileWorkspaceEvent(filePath, finalContent, 'edit')
                 // doc:update isWriting=false — finalize preview
@@ -1684,7 +1874,10 @@ async function handleMessage(message) {
         // Claude CLI sends tool input progressively: content_block_start has input: {},
         // then input_json_delta events carry the actual JSON. Without accumulating these,
         // tool indicators show "(no command)" because input is empty.
-        if (streamEvent?.type === 'content_block_delta' && streamEvent?.delta?.type === 'input_json_delta') {
+        if (
+          streamEvent?.type === 'content_block_delta' &&
+          streamEvent?.delta?.type === 'input_json_delta'
+        ) {
           const partialJson = streamEvent.delta.partial_json || ''
           if (blockIndex !== null) {
             const toolState = activeToolsByIndex.get(blockIndex)
@@ -1704,12 +1897,18 @@ async function handleMessage(message) {
         }
 
         // Citations delta — ignore silently (citations are embedded in final text)
-        if (streamEvent?.type === 'content_block_delta' && streamEvent?.delta?.type === 'citations_delta') {
+        if (
+          streamEvent?.type === 'content_block_delta' &&
+          streamEvent?.delta?.type === 'citations_delta'
+        ) {
           return
         }
 
         // Thinking deltas — 🚀 PERF: batched every 80ms to reduce WebSocket pressure
-        if (streamEvent?.type === 'content_block_delta' && streamEvent?.delta?.type === 'thinking_delta') {
+        if (
+          streamEvent?.type === 'content_block_delta' &&
+          streamEvent?.delta?.type === 'thinking_delta'
+        ) {
           const deltaText = streamEvent.delta.thinking || streamEvent.delta.text || ''
           if (!deltaText) return
           const thinkingState = blockIndex !== null ? activeThinkingByIndex.get(blockIndex) : null
@@ -1748,7 +1947,8 @@ async function handleMessage(message) {
 
           const block = streamEvent.content_block
           if (block?.type === 'thinking' || block?.type === 'redacted_thinking') {
-            const thinkingId = block.id || `thinking-${now}-${Math.random().toString(36).slice(2, 8)}`
+            const thinkingId =
+              block.id || `thinking-${now}-${Math.random().toString(36).slice(2, 8)}`
             if (blockIndex !== null) {
               activeThinkingByIndex.set(blockIndex, {
                 id: thinkingId,
@@ -1792,17 +1992,26 @@ async function handleMessage(message) {
           // mcp_tool_use, and result blocks that appear as content_block_start in stream-json.
           // The original Claude CLI sets "tool-input" spinner state for all of these.
           const TOOL_BLOCK_TYPES = new Set([
-            'tool_use', 'server_tool_use', 'mcp_tool_use',
-            'web_search_tool_result', 'web_fetch_tool_result',
-            'code_execution_tool_result', 'bash_code_execution_tool_result',
-            'text_editor_code_execution_tool_result', 'tool_search_tool_result',
-            'mcp_tool_result', 'container_upload',
+            'tool_use',
+            'server_tool_use',
+            'mcp_tool_use',
+            'web_search_tool_result',
+            'web_fetch_tool_result',
+            'code_execution_tool_result',
+            'bash_code_execution_tool_result',
+            'text_editor_code_execution_tool_result',
+            'tool_search_tool_result',
+            'mcp_tool_result',
+            'container_upload',
           ])
           if (TOOL_BLOCK_TYPES.has(block?.type)) {
             // For server_tool_use, the tool name is in block.name (e.g. "web_search")
             // For result blocks, derive name from block type itself
             const rawName = block.name || block.type
-            const toolUseId = block.id || block.tool_use_id || `tool-${now}-${Math.random().toString(36).slice(2, 8)}`
+            const toolUseId =
+              block.id ||
+              block.tool_use_id ||
+              `tool-${now}-${Math.random().toString(36).slice(2, 8)}`
             if (blockIndex !== null) {
               activeToolsByIndex.set(blockIndex, {
                 toolUseId,
@@ -1845,7 +2054,7 @@ async function handleMessage(message) {
                   thinkingId: thinkingState.id,
                   timestamp: now,
                   elapsedMs,
-                  text: thinkingState.text || '',  // full thinking text for on-demand expand
+                  text: thinkingState.text || '', // full thinking text for on-demand expand
                 },
               })
               completedThinkingBlocks.push({
@@ -1880,7 +2089,14 @@ async function handleMessage(message) {
               // tool_use INPUT finished streaming, not that the subtask completed.
               // For all other tools, content_block_stop IS the right place to mark
               // completion because tool_result events may not arrive in stream-json.
-              const SUBAGENT_TOOLS = new Set(['Task', 'task', 'Agent', 'agent', 'spawn_task_session', 'batch_spawn_task_sessions'])
+              const SUBAGENT_TOOLS = new Set([
+                'Task',
+                'task',
+                'Agent',
+                'agent',
+                'spawn_task_session',
+                'batch_spawn_task_sessions',
+              ])
               const toolName = toolState.toolName || ''
               const baseName = toolName.includes('__') ? toolName.split('__').pop() : toolName
               if (SUBAGENT_TOOLS.has(baseName)) {
@@ -1964,7 +2180,10 @@ async function handleMessage(message) {
             // Extract complete tool input — the assistant message contains the
             // fully accumulated input (unlike content_block_start which has {}).
             // This applies to tool_use, server_tool_use, and mcp_tool_use blocks.
-            const isToolBlock = block.type === 'tool_use' || block.type === 'server_tool_use' || block.type === 'mcp_tool_use'
+            const isToolBlock =
+              block.type === 'tool_use' ||
+              block.type === 'server_tool_use' ||
+              block.type === 'mcp_tool_use'
             if (isToolBlock && block.id && block.input) {
               const existing = activeToolsById.get(block.id)
               if (existing && (!existing.input || Object.keys(existing.input).length === 0)) {
@@ -2022,7 +2241,13 @@ async function handleMessage(message) {
 
             if (Array.isArray(resultPayload)) {
               resultPayload = resultPayload
-                .map((item) => (typeof item?.text === 'string' ? item.text : typeof item === 'string' ? item : JSON.stringify(item)))
+                .map((item) =>
+                  typeof item?.text === 'string'
+                    ? item.text
+                    : typeof item === 'string'
+                      ? item
+                      : JSON.stringify(item)
+                )
                 .join('\n')
             }
             if (resultPayload && typeof resultPayload !== 'string') {
@@ -2048,28 +2273,61 @@ async function handleMessage(message) {
         if (event.type === 'system') {
           const subtype = event.subtype
           // Plan mode transitions — let frontend know agent entered/exited planning
-          if (subtype === 'plan_mode' || subtype === 'plan_mode_exit' || subtype === 'plan_mode_reentry') {
-            sendJSON({ type: 'system_event', sessionId, commandId, event: { subtype, timestamp: now } })
+          if (
+            subtype === 'plan_mode' ||
+            subtype === 'plan_mode_exit' ||
+            subtype === 'plan_mode_reentry'
+          ) {
+            sendJSON({
+              type: 'system_event',
+              sessionId,
+              commandId,
+              event: { subtype, timestamp: now },
+            })
             return
           }
           // Hook lifecycle — show user that hooks are running
-          if (subtype === 'hook_started' || subtype === 'hook_progress' || subtype === 'hook_response') {
-            sendJSON({ type: 'system_event', sessionId, commandId, event: { subtype, hookName: event.hook_name, timestamp: now } })
+          if (
+            subtype === 'hook_started' ||
+            subtype === 'hook_progress' ||
+            subtype === 'hook_response'
+          ) {
+            sendJSON({
+              type: 'system_event',
+              sessionId,
+              commandId,
+              event: { subtype, hookName: event.hook_name, timestamp: now },
+            })
             return
           }
           // Task/agent notifications (subagent spawned, progress, etc.)
           if (subtype === 'task_notification' || subtype === 'task_progress') {
-            sendJSON({ type: 'system_event', sessionId, commandId, event: { subtype, message: event.message, timestamp: now } })
+            sendJSON({
+              type: 'system_event',
+              sessionId,
+              commandId,
+              event: { subtype, message: event.message, timestamp: now },
+            })
             return
           }
           // MCP progress
           if (subtype === 'mcp_message' || subtype === 'mcp_progress') {
-            sendJSON({ type: 'system_event', sessionId, commandId, event: { subtype, message: event.message, timestamp: now } })
+            sendJSON({
+              type: 'system_event',
+              sessionId,
+              commandId,
+              event: { subtype, message: event.message, timestamp: now },
+            })
             return
           }
           // Context compaction boundaries
           if (subtype === 'compact_boundary' || subtype === 'microcompact_boundary') {
-            sendJSON({ type: 'system_event', sessionId, commandId, event: { subtype, timestamp: now } })
+            sendJSON({
+              type: 'system_event',
+              sessionId,
+              commandId,
+              event: { subtype, timestamp: now },
+            })
             return
           }
           return
@@ -2081,8 +2339,8 @@ async function handleMessage(message) {
     rl.on('line', lineHandler)
 
     // stderr → log
-    let isRateLimitError = false  // Track 429/rate-limit separately — binding should be preserved
-    let usageExceededMessage = ''  // Capture the human-readable usage message for frontend
+    let isRateLimitError = false // Track 429/rate-limit separately — binding should be preserved
+    let usageExceededMessage = '' // Capture the human-readable usage message for frontend
     const stderrHandler = (chunk) => {
       const text = chunk.toString()
       if (text.trim()) {
@@ -2090,15 +2348,21 @@ async function handleMessage(message) {
         // Detect temporary rate-limit / quota / overload errors (429, 529) — session is still valid
         // Also matches Claude CLI's "out of extra usage" / "out of usage" messages
         // 529 = Anthropic API overloaded (temporary, same treatment as 429)
-        if (/API Error:\s*(429|529)|Repeated\s+529|exceeded your current quota|rate.?limit|over.?capacity|out of.*usage|overloaded/i.test(text)) {
+        if (
+          /API Error:\s*(429|529)|Repeated\s+529|exceeded your current quota|rate.?limit|over.?capacity|out of.*usage|overloaded/i.test(
+            text
+          )
+        ) {
           isRateLimitError = true
-          isApiError = true  // Still an API error (skip poisoned-binding save), but won't clear existing
+          isApiError = true // Still an API error (skip poisoned-binding save), but won't clear existing
           // Capture the usage message for forwarding to frontend
           const usageMatch = text.match(/(?:You're |you are )?out of.*usage[^]*/i)
           if (usageMatch) usageExceededMessage = text.trim()
         }
         // Detect permanent API/auth errors (403, 401, etc.)
-        else if (/API Error:\s*4\d{2}|Failed to authenticate|forbidden|Request not allowed/i.test(text)) {
+        else if (
+          /API Error:\s*4\d{2}|Failed to authenticate|forbidden|Request not allowed/i.test(text)
+        ) {
           isApiError = true
         }
       }
@@ -2108,11 +2372,16 @@ async function handleMessage(message) {
     // 4. On process exit, send completion events
     const closeHandler = async (code, signal) => {
       clearInterval(heartbeatTimer) // Stop heartbeat — task is done
-      if (sessionId && activeChildren.get(sessionId)?.child === child) activeChildren.delete(sessionId)
+      if (sessionId && activeChildren.get(sessionId)?.child === child)
+        activeChildren.delete(sessionId)
 
       // Clean up system prompt temp file
       if (systemPromptTmpFile) {
-        try { unlinkSync(systemPromptTmpFile) } catch { /* ignore */ }
+        try {
+          unlinkSync(systemPromptTmpFile)
+        } catch {
+          /* ignore */
+        }
       }
 
       // SESSION RETRY: If --resume failed (exit code 1, no response produced), clear the
@@ -2131,13 +2400,19 @@ async function handleMessage(message) {
       const killedBySignal = signal || (code !== null && code >= 128)
       if (killedBySignal) {
         if (attemptedResume) {
-          log(chalk.dim(`[session] CLI killed by ${signal || `signal(code=${code})`}, preserving session binding for ${sessionId}`))
+          log(
+            chalk.dim(
+              `[session] CLI killed by ${signal || `signal(code=${code})`}, preserving session binding for ${sessionId}`
+            )
+          )
         }
         // Send streaming.completed if WS is still open (edge case)
         if (wsRef && wsRef.readyState === 1) {
           try {
             sendJSON({ type: 'streaming.completed', sessionId, commandId, status: 'cancelled' })
-          } catch { /* ignore */ }
+          } catch {
+            /* ignore */
+          }
         }
         return
       }
@@ -2145,7 +2420,11 @@ async function handleMessage(message) {
         sessionRetried = true
         sessionMap.delete(sessionId)
         persistSessionMap()
-        log(chalk.yellow(`[session-retry] --resume failed (exit=${code}), cleared stale binding, retrying without --resume`))
+        log(
+          chalk.yellow(
+            `[session-retry] --resume failed (exit=${code}), cleared stale binding, retrying without --resume`
+          )
+        )
         // Reset streaming state for fresh attempt
         fullText = ''
         resultSessionId = null
@@ -2172,10 +2451,18 @@ async function handleMessage(message) {
               retryArgs = retryArgs.map((a, i, arr) =>
                 i > 0 && arr[i - 1] === '--append-system-prompt' ? retryPrompt : a
               )
-              log(chalk.green(`[session-retry] Injected conversation history into retry system prompt`))
+              log(
+                chalk.green(
+                  `[session-retry] Injected conversation history into retry system prompt`
+                )
+              )
             }
           } catch (err) {
-            log(chalk.yellow(`[session-retry] History fetch failed (continuing without): ${err.message}`))
+            log(
+              chalk.yellow(
+                `[session-retry] History fetch failed (continuing without): ${err.message}`
+              )
+            )
           }
         }
         // Pre-assign a new session ID for the retry so interrupt won't lose it
@@ -2189,17 +2476,29 @@ async function handleMessage(message) {
         // Spawn fresh without --resume (with history context if available)
         const childEnvRetry = { ...process.env }
         delete childEnvRetry.ANTHROPIC_API_KEY
-        child = spawn(cmd, retryArgs, { cwd: workspace, env: childEnvRetry, stdio: ['ignore', 'pipe', 'pipe'], shell: false })
+        child = spawn(cmd, retryArgs, {
+          cwd: workspace,
+          env: childEnvRetry,
+          stdio: ['ignore', 'pipe', 'pipe'],
+          shell: false,
+        })
         if (sessionId) {
           activeChildren.set(sessionId, { child, commandId })
           sessionJustReplaced.set(sessionId, commandId)
           setTimeout(() => {
-            if (sessionJustReplaced.has(sessionId) && sessionJustReplaced.get(sessionId) === commandId) {
+            if (
+              sessionJustReplaced.has(sessionId) &&
+              sessionJustReplaced.get(sessionId) === commandId
+            ) {
               sessionJustReplaced.delete(sessionId)
             }
           }, 5000)
         }
-        log(chalk.blue(`[session-retry] Re-running: ${cmd} ${retryArgs.slice(0, 5).join(' ')}... [${retryArgs.length} args]`))
+        log(
+          chalk.blue(
+            `[session-retry] Re-running: ${cmd} ${retryArgs.slice(0, 5).join(' ')}... [${retryArgs.length} args]`
+          )
+        )
         // Rewire NDJSON parser + handlers onto the new child
         const rlRetry = createInterface({ input: child.stdout })
         rlRetry.on('line', lineHandler)
@@ -2217,11 +2516,17 @@ async function handleMessage(message) {
       // valid on Anthropic's side. Preserve the binding so --resume works when quota resets.
       // Also detect errors from response text (Claude CLI wraps API errors as text content)
       if (!isApiError && fullText) {
-        if (/API Error:\s*(429|529)|Repeated\s+529|exceeded your current quota|rate.?limit|over.?capacity|out of.*usage|overloaded/i.test(fullText)) {
+        if (
+          /API Error:\s*(429|529)|Repeated\s+529|exceeded your current quota|rate.?limit|over.?capacity|out of.*usage|overloaded/i.test(
+            fullText
+          )
+        ) {
           isRateLimitError = true
           isApiError = true
           if (!usageExceededMessage) usageExceededMessage = fullText.trim()
-        } else if (/API Error:\s*4\d{2}|Failed to authenticate|"type":"forbidden"/i.test(fullText)) {
+        } else if (
+          /API Error:\s*4\d{2}|Failed to authenticate|"type":"forbidden"/i.test(fullText)
+        ) {
           isApiError = true
         }
       }
@@ -2240,17 +2545,33 @@ async function handleMessage(message) {
         } else if (isRateLimitError) {
           // 429 / quota exceeded: PRESERVE existing binding (session still valid on server)
           // If we had a pre-assigned session, keep it; if we had an old binding, keep it.
-          log(chalk.yellow(`[session] Preserved binding for ${sessionId} (rate-limit/quota — session still valid)`))
+          log(
+            chalk.yellow(
+              `[session] Preserved binding for ${sessionId} (rate-limit/quota — session still valid)`
+            )
+          )
         } else {
           sessionMap.set(sessionId, resultSessionId)
           persistSessionMap()
-          log(chalk.green(`[session] Mapped: ${sessionId} → ${resultSessionId} (map size: ${sessionMap.size}, file: ${SESSION_MAP_FILE})`))
+          log(
+            chalk.green(
+              `[session] Mapped: ${sessionId} → ${resultSessionId} (map size: ${sessionMap.size}, file: ${SESSION_MAP_FILE})`
+            )
+          )
         }
       } else if (!resultSessionId && sessionId) {
         // Diagnostic: CLI completed but didn't emit session_id in result event
-        log(chalk.yellow(`[session] No session_id in result event (sessionId=${sessionId}, code=${code}, hasText=${!!fullText}, signal=${signal})`))
+        log(
+          chalk.yellow(
+            `[session] No session_id in result event (sessionId=${sessionId}, code=${code}, hasText=${!!fullText}, signal=${signal})`
+          )
+        )
       } else if (!sessionId) {
-        log(chalk.yellow(`[session] No VO sessionId in message — cannot track session (resultSessionId=${resultSessionId})`))
+        log(
+          chalk.yellow(
+            `[session] No VO sessionId in message — cannot track session (resultSessionId=${resultSessionId})`
+          )
+        )
       }
 
       // Auth health tracking: detect consecutive 403s and notify owner
@@ -2262,7 +2583,10 @@ async function handleMessage(message) {
 
       if (fullText) {
         process.stdout.write('\n')
-        info(chalk[channel.color](`[${channel.type}] ←`) + chalk.dim(` ${fullText.slice(0, 120)}${fullText.length > 120 ? '...' : ''}`))
+        info(
+          chalk[channel.color](`[${channel.type}] ←`) +
+            chalk.dim(` ${fullText.slice(0, 120)}${fullText.length > 120 ? '...' : ''}`)
+        )
       }
 
       // Send streaming.completed
@@ -2279,14 +2603,24 @@ async function handleMessage(message) {
       // The endpoint is idempotent (deduplicates by commandId).
       try {
         const proto = managerUrl.protocol === 'wss:' ? 'https' : 'http'
-        const httpBase = process.env.CHAT_BRIDGE_HTTP_URL || process.env.CHAT_BRIDGE_URL || `${proto}://${managerUrl.host}`
+        const httpBase =
+          process.env.CHAT_BRIDGE_HTTP_URL ||
+          process.env.CHAT_BRIDGE_URL ||
+          `${proto}://${managerUrl.host}`
         fetch(`${httpBase}/api/streaming-complete`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ sessionId, commandId, agentHandle: argv.agent, status: 'completed' }),
+          body: JSON.stringify({
+            sessionId,
+            commandId,
+            agentHandle: argv.agent,
+            status: 'completed',
+          }),
           signal: AbortSignal.timeout(5000),
         }).catch(() => {}) // fire-and-forget
-      } catch { /* ignore */ }
+      } catch {
+        /* ignore */
+      }
 
       // Send final result
       const contentBlocks = []
@@ -2317,11 +2651,12 @@ async function handleMessage(message) {
       }
       // If usage exceeded and no fullText (message was only in stderr), inject it
       // so the frontend shows the user why the agent stopped.
-      const displayText = (fullText && fullText.trim())
-        ? fullText.trim()
-        : usageExceededMessage
-          ? `⚠️ ${usageExceededMessage}`
-          : ''
+      const displayText =
+        fullText && fullText.trim()
+          ? fullText.trim()
+          : usageExceededMessage
+            ? `⚠️ ${usageExceededMessage}`
+            : ''
       if (displayText) {
         contentBlocks.push({
           type: 'text',
@@ -2335,17 +2670,24 @@ async function handleMessage(message) {
 
       // Build usage/cost for billing pipeline — chat-bridge emitUsageFromResult picks these up
       const isByoSubscription = resultCostUsd === 0 && resultUsage
-      const usageBlock = resultUsage ? {
-        promptTokens: resultUsage.input_tokens || resultUsage.promptTokens || 0,
-        completionTokens: resultUsage.output_tokens || resultUsage.completionTokens || 0,
-        tokens: (resultUsage.input_tokens || 0) + (resultUsage.output_tokens || 0),
-        cacheWriteTokens: resultUsage.cache_creation_input_tokens || resultUsage.cacheWriteTokens || 0,
-        cacheReadTokens: resultUsage.cache_read_input_tokens || resultUsage.cacheReadTokens || 0,
-      } : undefined
-      const costBlock = resultCostUsd !== null && resultCostUsd !== undefined ? {
-        amount: resultCostUsd,
-        currency: 'USD',
-      } : undefined
+      const usageBlock = resultUsage
+        ? {
+            promptTokens: resultUsage.input_tokens || resultUsage.promptTokens || 0,
+            completionTokens: resultUsage.output_tokens || resultUsage.completionTokens || 0,
+            tokens: (resultUsage.input_tokens || 0) + (resultUsage.output_tokens || 0),
+            cacheWriteTokens:
+              resultUsage.cache_creation_input_tokens || resultUsage.cacheWriteTokens || 0,
+            cacheReadTokens:
+              resultUsage.cache_read_input_tokens || resultUsage.cacheReadTokens || 0,
+          }
+        : undefined
+      const costBlock =
+        resultCostUsd !== null && resultCostUsd !== undefined
+          ? {
+              amount: resultCostUsd,
+              currency: 'USD',
+            }
+          : undefined
 
       try {
         sendJSON({
@@ -2361,7 +2703,8 @@ async function handleMessage(message) {
           cost: costBlock,
           metadata: {
             toolActions: completedToolActions.length > 0 ? completedToolActions : undefined,
-            thinkingBlocks: completedThinkingBlocks.length > 0 ? completedThinkingBlocks : undefined,
+            thinkingBlocks:
+              completedThinkingBlocks.length > 0 ? completedThinkingBlocks : undefined,
             contentBlocks: normalizedContentBlocks.length > 0 ? normalizedContentBlocks : undefined,
             isByo: isByoSubscription || undefined,
             rateLimitInfo: latestRateLimitInfo || undefined,
@@ -2378,7 +2721,8 @@ async function handleMessage(message) {
           stderr: '',
           exitCode: code || 0,
           metadata: {
-            thinkingBlocks: completedThinkingBlocks.length > 0 ? completedThinkingBlocks : undefined,
+            thinkingBlocks:
+              completedThinkingBlocks.length > 0 ? completedThinkingBlocks : undefined,
           },
         })
         log(chalk.yellow(`Result metadata fallback used: ${err.message}`))
@@ -2437,7 +2781,11 @@ async function handleMessage(message) {
       // it was meant for the old command which is already dead. Ignore it so
       // we don't accidentally kill the new command that just started.
       if (sessionId && sessionJustReplaced.has(sessionId)) {
-        log(chalk.dim(`[stopCommand] Ignoring stale stop for session ${sessionId} — command was already replaced`))
+        log(
+          chalk.dim(
+            `[stopCommand] Ignoring stale stop for session ${sessionId} — command was already replaced`
+          )
+        )
         // Do NOT delete the flag here — multiple stale stopCommands can arrive in
         // the same tick (frontend fire-and-forget + session close/reopen). Deleting
         // after the first one lets subsequent stops kill the freshly-spawned process.
@@ -2452,7 +2800,11 @@ async function handleMessage(message) {
         reason: 'user-stop',
         abortedAt: new Date().toISOString(),
       })
-      try { prev.child.kill('SIGTERM') } catch { /* ignore */ }
+      try {
+        prev.child.kill('SIGTERM')
+      } catch {
+        /* ignore */
+      }
       activeChildren.delete(sessionId)
     } else {
       // No active process — let the TTL clean up the replace flag naturally.
@@ -2482,7 +2834,8 @@ async function refreshTokenAndReconnect() {
 
   const agentName = cached.lastAgent.handle.split('.')[0]
   const officeId = cached.lastOfficeId
-  const chatBridgeBase = process.env.CHAT_BRIDGE_HTTP_URL ||
+  const chatBridgeBase =
+    process.env.CHAT_BRIDGE_HTTP_URL ||
     process.env.CHAT_BRIDGE_URL ||
     process.env.CHAT_BRIDGE_BASE_URL ||
     'https://chatbridge.aladdinagi.xyz'
@@ -2493,7 +2846,13 @@ async function refreshTokenAndReconnect() {
       'Content-Type': 'application/json',
       'x-cli-session': cached.sessionToken,
     },
-    body: JSON.stringify({ officeId, agentName, provider: 'claude-code', roleId: cached.lastAgent?.roleId, roleCategory: cached.lastAgent?.roleCategory }),
+    body: JSON.stringify({
+      officeId,
+      agentName,
+      provider: 'claude-code',
+      roleId: cached.lastAgent?.roleId,
+      roleCategory: cached.lastAgent?.roleCategory,
+    }),
     signal: AbortSignal.timeout(10000),
   })
 
@@ -2525,7 +2884,7 @@ async function refreshTokenAndReconnect() {
   log(chalk.green('Token refreshed successfully, reconnecting...'))
 
   // Small delay to let Registry propagate the new token
-  await new Promise(resolve => setTimeout(resolve, 1000))
+  await new Promise((resolve) => setTimeout(resolve, 1000))
 
   connect()
 }
@@ -2537,13 +2896,16 @@ function connect() {
   const ws = new WebSocket(managerUrl.href)
   wsRef = ws
 
-  const PING_INTERVAL_MS = 15_000   // matches server-side CLIENT_PING_INTERVAL_MS (15s)
-  const MAX_MISSED_PONGS = 2        // matches server-side CLIENT_MAX_MISSED_PONGS (30s timeout)
+  const PING_INTERVAL_MS = 15_000 // matches server-side CLIENT_PING_INTERVAL_MS (15s)
+  const MAX_MISSED_PONGS = 2 // matches server-side CLIENT_MAX_MISSED_PONGS (30s timeout)
   let pingTimer = null
   let missedPongs = 0
 
   const stopHeartbeat = () => {
-    if (pingTimer) { clearInterval(pingTimer); pingTimer = null }
+    if (pingTimer) {
+      clearInterval(pingTimer)
+      pingTimer = null
+    }
   }
 
   ws.on('open', async () => {
@@ -2552,14 +2914,19 @@ function connect() {
     // Only reset tokenRetryAttempted after connection is stable for 10s
     // This prevents infinite 1008 reconnect loops where the server rejects
     // the fresh token immediately after ws.open fires
-    const tokenResetTimer = setTimeout(() => { tokenRetryAttempted = false }, 10_000)
+    const tokenResetTimer = setTimeout(() => {
+      tokenRetryAttempted = false
+    }, 10_000)
     ws.once('close', () => clearTimeout(tokenResetTimer))
     missedPongs = 0
 
     // Heartbeat: ping + missed-pong counter (matches server-side CLIENT_PING_INTERVAL_MS / CLIENT_MAX_MISSED_PONGS)
     let lastPingTime = Date.now()
     pingTimer = setInterval(() => {
-      if (ws.readyState !== WebSocket.OPEN) { stopHeartbeat(); return }
+      if (ws.readyState !== WebSocket.OPEN) {
+        stopHeartbeat()
+        return
+      }
       const now = Date.now()
       const elapsed = now - lastPingTime
       lastPingTime = now
@@ -2567,25 +2934,47 @@ function connect() {
       // Sleep detection: if timer gap is >3x expected interval, system was asleep.
       // The WS is certainly dead, but network may not be ready yet.
       if (elapsed > PING_INTERVAL_MS * 3) {
-        log(chalk.yellow(`System wake detected (${(elapsed / 1000).toFixed(0)}s gap) — reconnecting with network settle delay`))
+        log(
+          chalk.yellow(
+            `System wake detected (${(elapsed / 1000).toFixed(0)}s gap) — reconnecting with network settle delay`
+          )
+        )
         wakeFromSleep = true
-        reconnectAttempts = 0  // Reset backoff — this isn't a server-side failure
+        reconnectAttempts = 0 // Reset backoff — this isn't a server-side failure
         stopHeartbeat()
-        try { ws.terminate() } catch { /* ignore */ }
+        try {
+          ws.terminate()
+        } catch {
+          /* ignore */
+        }
         return
       }
 
       missedPongs++
       if (missedPongs > MAX_MISSED_PONGS) {
-        log(chalk.red(`Heartbeat timeout — ${missedPongs} missed pongs (>${MAX_MISSED_PONGS}), forcing reconnect`))
+        log(
+          chalk.red(
+            `Heartbeat timeout — ${missedPongs} missed pongs (>${MAX_MISSED_PONGS}), forcing reconnect`
+          )
+        )
         stopHeartbeat()
-        try { ws.terminate() } catch { /* ignore */ }
+        try {
+          ws.terminate()
+        } catch {
+          /* ignore */
+        }
         return
       }
-      try { ws.ping() } catch { /* ignore */ }
+      try {
+        ws.ping()
+      } catch {
+        /* ignore */
+      }
     }, PING_INTERVAL_MS)
 
-    ws.on('pong', () => { missedPongs = 0 })
+    ws.on('pong', () => {
+      missedPongs = 0
+    })
 
     sendHostMeta(ws)
 
@@ -2593,9 +2982,15 @@ function connect() {
     // Must happen AFTER sendHostMeta so the new Chat Bridge instance
     // recognises this host before receiving streaming events.
     if (gracefulDisconnect && pendingSendBuffer.length > 0) {
-      log(chalk.green(`[shutdown] Reconnected — flushing ${pendingSendBuffer.length} buffered events`))
+      log(
+        chalk.green(`[shutdown] Reconnected — flushing ${pendingSendBuffer.length} buffered events`)
+      )
       for (const data of pendingSendBuffer) {
-        try { ws.send(data) } catch { /* ignore */ }
+        try {
+          ws.send(data)
+        } catch {
+          /* ignore */
+        }
       }
     }
     pendingSendBuffer.length = 0
@@ -2620,14 +3015,17 @@ function connect() {
     let mcpRegistered = false
     if (!mcpConfigPath) {
       mcpRegistered = await registerMcpServer()
-      if (mcpRegistered) mcpConfigPath = 'registered'  // flag to skip re-registration
+      if (mcpRegistered) mcpConfigPath = 'registered' // flag to skip re-registration
     }
 
     // ── Local screen sharing (macOS VNC → noVNC in Computer tab) ──────────
     // Priority: 1) explicit --novnc-url  2) auto-detect macOS Screen Sharing
     // Construct relay URL for cross-device streaming via chatbridge
-    const chatBridgeWsBase = (process.env.CHAT_BRIDGE_URL || 'wss://chatbridge.aladdinagi.xyz').replace(/^http/, 'ws')
-    const screenRelayUrl = `${chatBridgeWsBase}/ws/screen/${encodeURIComponent(hostId)}`
+    const chatBridgeWsBase = (
+      process.env.CHAT_BRIDGE_URL || 'wss://chatbridge.aladdinagi.xyz'
+    ).replace(/^http/, 'ws')
+    const deviceHostname = os.hostname()
+    const screenRelayUrl = `${chatBridgeWsBase}/ws/screen/${encodeURIComponent(hostId)}?device=${encodeURIComponent(deviceHostname)}`
 
     const explicitNovnc = argv['novnc-url'] || process.env.NOVNC_URL
     if (explicitNovnc) {
@@ -2688,7 +3086,9 @@ function connect() {
     // Chat Bridge sends `server_shutdown` before closing during rolling deploys
     if (message.type === 'server_shutdown') {
       gracefulDisconnect = true
-      log(chalk.yellow('[shutdown] Server announced graceful restart — keeping active sessions alive'))
+      log(
+        chalk.yellow('[shutdown] Server announced graceful restart — keeping active sessions alive')
+      )
       return
     }
     handleMessage(message)
@@ -2719,12 +3119,20 @@ function connect() {
 
     // ── Graceful disconnect: keep children alive, buffer output ───────
     if (gracefulDisconnect && code !== 1008) {
-      log(chalk.yellow(`[shutdown] Graceful disconnect — keeping ${activeChildren.size} active children alive, buffering output`))
+      log(
+        chalk.yellow(
+          `[shutdown] Graceful disconnect — keeping ${activeChildren.size} active children alive, buffering output`
+        )
+      )
       // Safety timeout: if reconnect doesn't happen within 60s, give up
       gracefulKillTimer = setTimeout(() => {
         log(chalk.red('[shutdown] Reconnect timeout — killing buffered children'))
         for (const [, entry] of activeChildren) {
-          try { entry?.child?.kill('SIGTERM') } catch { /* ignore */ }
+          try {
+            entry?.child?.kill('SIGTERM')
+          } catch {
+            /* ignore */
+          }
         }
         activeChildren.clear()
         pendingSendBuffer.length = 0
@@ -2737,7 +3145,11 @@ function connect() {
 
     // Non-graceful (crash/error): kill all active CLI processes
     for (const [, entry] of activeChildren) {
-      try { entry?.child?.kill('SIGTERM') } catch { /* ignore */ }
+      try {
+        entry?.child?.kill('SIGTERM')
+      } catch {
+        /* ignore */
+      }
     }
     activeChildren.clear()
 
@@ -2748,7 +3160,7 @@ function connect() {
       console.log(chalk.yellow('  Run "npx @office-xyz/claude-code" to join a new office.'))
       console.log('')
       import('./onboarding.js')
-        .then(m => m.clearSession())
+        .then((m) => m.clearSession())
         .catch(() => {})
         .finally(() => process.exit(0))
       return
@@ -2770,7 +3182,9 @@ function connect() {
         return
       }
       console.log('')
-      console.log(chalk.red.bold('  Connection rejected: invalid or expired token (retry exhausted).'))
+      console.log(
+        chalk.red.bold('  Connection rejected: invalid or expired token (retry exhausted).')
+      )
       console.log(chalk.yellow('  Run "npx @office-xyz/claude-code" again to re-authenticate.'))
       console.log('')
       process.exit(1)
@@ -2791,7 +3205,11 @@ function scheduleReconnect() {
   if (wakeFromSleep) {
     wakeFromSleep = false
     const settleDelay = 5000
-    log(chalk.yellow(`Reconnecting in ${(settleDelay / 1000).toFixed(1)}s (network settle after wake)...`))
+    log(
+      chalk.yellow(
+        `Reconnecting in ${(settleDelay / 1000).toFixed(1)}s (network settle after wake)...`
+      )
+    )
     setTimeout(connect, settleDelay)
     return
   }
@@ -2799,7 +3217,11 @@ function scheduleReconnect() {
   // Faster reconnect during graceful shutdown (500ms base) vs crash (2s base)
   const baseDelay = gracefulDisconnect ? 500 : 2000
   const delay = Math.min(baseDelay * Math.pow(1.5, reconnectAttempts - 1), MAX_RECONNECT_DELAY_MS)
-  log(chalk.yellow(`Reconnecting in ${(delay / 1000).toFixed(1)}s (attempt ${reconnectAttempts})${gracefulDisconnect ? ' [graceful]' : ''}...`))
+  log(
+    chalk.yellow(
+      `Reconnecting in ${(delay / 1000).toFixed(1)}s (attempt ${reconnectAttempts})${gracefulDisconnect ? ' [graceful]' : ''}...`
+    )
+  )
   setTimeout(connect, delay)
 }
 
@@ -2809,7 +3231,7 @@ function scheduleReconnect() {
 // WS reconnection (up to 30s exponential backoff window).
 
 function startRegistryHeartbeat() {
-  if (registryHeartbeatTimer) return  // already running
+  if (registryHeartbeatTimer) return // already running
   const agentHandle = argv.agent
   if (!agentHandle) return
 
@@ -2895,24 +3317,26 @@ async function detectAndRegisterAdbDevices(dws, officeId, agentHandle, parentDev
       log(chalk.green(`[adb] Detected phone: ${model} (${serial})`))
 
       // Register as independent phone device
-      dws.send(JSON.stringify({
-        type: 'register',
-        officeId,
-        agentHandle,
-        userId: agentHandle,
-        metadata: {
-          deviceType: 'phone',
-          connectionMode: 'adb',
-          parentDeviceId: parentDeviceId || undefined,
-          hostname: model,
-          platform: 'android',
-          capabilities: ['phone_adb', 'screen_mirror'],
-          serial,
-          agentBound: true,
-          boundAgentHandle: agentHandle,
-          officeWide: false,
-        },
-      }))
+      dws.send(
+        JSON.stringify({
+          type: 'register',
+          officeId,
+          agentHandle,
+          userId: agentHandle,
+          metadata: {
+            deviceType: 'phone',
+            connectionMode: 'adb',
+            parentDeviceId: parentDeviceId || undefined,
+            hostname: model,
+            platform: 'android',
+            capabilities: ['phone_adb', 'screen_mirror'],
+            serial,
+            agentBound: true,
+            boundAgentHandle: agentHandle,
+            officeWide: false,
+          },
+        })
+      )
 
       adbRegisteredDevices.set(serial, { serial, model, deviceId: null })
     }
@@ -2926,10 +3350,12 @@ async function detectAndRegisterAdbDevices(dws, officeId, agentHandle, parentDev
         if (mobileBridge) mobileBridge.stop()
 
         if (info.deviceId) {
-          dws.send(JSON.stringify({
-            type: 'device_unregister',
-            deviceId: info.deviceId,
-          }))
+          dws.send(
+            JSON.stringify({
+              type: 'device_unregister',
+              deviceId: info.deviceId,
+            })
+          )
         }
         adbRegisteredDevices.delete(serial)
       }
@@ -2951,7 +3377,10 @@ async function detectAndRegisterAdbDevices(dws, officeId, agentHandle, parentDev
 }
 
 function stopAdbPoll() {
-  if (adbPollTimer) { clearInterval(adbPollTimer); adbPollTimer = null }
+  if (adbPollTimer) {
+    clearInterval(adbPollTimer)
+    adbPollTimer = null
+  }
   adbRegisteredDevices.clear()
   stopAllMobileScreenBridges()
 }
@@ -2977,7 +3406,11 @@ async function startMobileScreenForPhone(serial, deviceId) {
       maxWidth: 720,
     })
 
-    log(chalk.green(`[mobile-screen] Bridge started for ${serial} (${bridge.resolution.width}x${bridge.resolution.height})`))
+    log(
+      chalk.green(
+        `[mobile-screen] Bridge started for ${serial} (${bridge.resolution.width}x${bridge.resolution.height})`
+      )
+    )
 
     // Emit device:liveview with deviceType 'mobile' so frontend switches to Mobile tab
     emitDeviceLiveView(mobileRelayUrl, mobileRelayUrl, 'mobile')
@@ -2988,7 +3421,10 @@ async function startMobileScreenForPhone(serial, deviceId) {
 
 function connectLocalDevice() {
   // Clear any pending reconnect to avoid duplicates
-  if (deviceReconnectTimer) { clearTimeout(deviceReconnectTimer); deviceReconnectTimer = null }
+  if (deviceReconnectTimer) {
+    clearTimeout(deviceReconnectTimer)
+    deviceReconnectTimer = null
+  }
 
   const chatBridgeWs = (process.env.CHAT_BRIDGE_WS_URL || 'wss://chatbridge.aladdinagi.xyz')
     .replace(/^http/, 'ws')
@@ -2999,17 +3435,19 @@ function connectLocalDevice() {
   const dws = new WebSocket(deviceUrl)
   deviceWsRef = dws
 
-  const DEVICE_PING_INTERVAL_MS = 15_000   // align with main WS heartbeat cadence
-  const DEVICE_MAX_MISSED_PONGS = 2        // tolerate up to 2 missed pongs (30s) before terminating
+  const DEVICE_PING_INTERVAL_MS = 15_000 // align with main WS heartbeat cadence
+  const DEVICE_MAX_MISSED_PONGS = 2 // tolerate up to 2 missed pongs (30s) before terminating
   let deviceMissedPongs = 0
 
   const stopDeviceHeartbeat = () => {
-    if (devicePingTimer) { clearInterval(devicePingTimer); devicePingTimer = null }
+    if (devicePingTimer) {
+      clearInterval(devicePingTimer)
+      devicePingTimer = null
+    }
   }
 
   dws.on('open', () => {
     log(chalk.green('Local device connected'))
-    deviceIsAlive = true
     const agentHandle = argv.agent
     const officeId = agentHandle.split('.').slice(1).join('.')
 
@@ -3018,23 +3456,25 @@ function connectLocalDevice() {
 
     // Register as agent-bound device (NOT office-wide).
     // Only this specific agent's sessions can access the local file system.
-    dws.send(JSON.stringify({
-      type: 'register',
-      officeId,
-      agentHandle,
-      userId: agentHandle,
-      workingDirectory: workspace,
-      metadata: {
-        deviceType: 'local-agent',
-        hostname: os.hostname(),
-        platform: `${os.platform()}-${os.arch()}`,
-        capabilities: ['file_ops', 'exec_command', 'computer_use', 'phone_adb'],
-        agentBound: true,
-        boundAgentHandle: agentHandle,
-        officeWide: false,
-        deviceId: persistedDeviceId || undefined,
-      },
-    }))
+    dws.send(
+      JSON.stringify({
+        type: 'register',
+        officeId,
+        agentHandle,
+        userId: agentHandle,
+        workingDirectory: workspace,
+        metadata: {
+          deviceType: 'local-agent',
+          hostname: os.hostname(),
+          platform: `${os.platform()}-${os.arch()}`,
+          capabilities: ['file_ops', 'exec_command', 'computer_use', 'phone_adb'],
+          agentBound: true,
+          boundAgentHandle: agentHandle,
+          officeWide: false,
+          deviceId: persistedDeviceId || undefined,
+        },
+      })
+    )
 
     // Detect and register ADB-connected phones as independent devices
     detectAndRegisterAdbDevices(dws, officeId, agentHandle, persistedDeviceId)
@@ -3044,35 +3484,64 @@ function connectLocalDevice() {
     let deviceLastPingTime = Date.now()
     deviceMissedPongs = 0
     devicePingTimer = setInterval(() => {
-      if (dws.readyState !== WebSocket.OPEN) { stopDeviceHeartbeat(); return }
+      if (dws.readyState !== WebSocket.OPEN) {
+        stopDeviceHeartbeat()
+        return
+      }
       const now = Date.now()
       const elapsed = now - deviceLastPingTime
       deviceLastPingTime = now
 
       // Sleep detection: skip stale timeout after system wake
       if (elapsed > DEVICE_PING_INTERVAL_MS * 3) {
-        log(chalk.yellow(`[device] System wake detected (${(elapsed / 1000).toFixed(0)}s gap) — terminating stale connection`))
+        log(
+          chalk.yellow(
+            `[device] System wake detected (${(elapsed / 1000).toFixed(0)}s gap) — terminating stale connection`
+          )
+        )
         stopDeviceHeartbeat()
-        try { dws.terminate() } catch { /* ignore */ }
+        try {
+          dws.terminate()
+        } catch {
+          /* ignore */
+        }
         return
       }
 
       deviceMissedPongs++
       if (deviceMissedPongs > DEVICE_MAX_MISSED_PONGS) {
-        log(chalk.red(`[device] Heartbeat timeout — ${deviceMissedPongs} missed pongs, forcing reconnect`))
+        log(
+          chalk.red(
+            `[device] Heartbeat timeout — ${deviceMissedPongs} missed pongs, forcing reconnect`
+          )
+        )
         stopDeviceHeartbeat()
-        try { dws.terminate() } catch { /* ignore */ }
+        try {
+          dws.terminate()
+        } catch {
+          /* ignore */
+        }
         return
       }
-      try { dws.ping() } catch { /* ignore */ }
+      try {
+        dws.ping()
+      } catch {
+        /* ignore */
+      }
     }, DEVICE_PING_INTERVAL_MS)
 
-    dws.on('pong', () => { deviceMissedPongs = 0 })
+    dws.on('pong', () => {
+      deviceMissedPongs = 0
+    })
   })
 
   dws.on('message', async (data) => {
     let msg
-    try { msg = JSON.parse(data.toString()) } catch { return }
+    try {
+      msg = JSON.parse(data.toString())
+    } catch {
+      return
+    }
 
     // Handle registration ack — persist deviceId for reconnect
     if (msg.type === 'registered' && msg.deviceId) {
@@ -3095,10 +3564,14 @@ function connectLocalDevice() {
     }
 
     if (msg.type === 'tool_request') {
-      const { requestId, toolName, params } = msg
-      log(chalk.cyan(`[device] tool_request: ${toolName}${toolName === 'exec_command' && params?.command ? ` → ${params.command.slice(0, 80)}` : ''} (reqId: ${requestId})`))
+      const { requestId, toolName, params, deviceMeta } = msg
+      log(
+        chalk.cyan(
+          `[device] tool_request: ${toolName}${toolName === 'exec_command' && params?.command ? ` → ${params.command.slice(0, 80)}` : ''}${deviceMeta ? ` [${deviceMeta.deviceType}/${deviceMeta.connectionMode}]` : ''} (reqId: ${requestId})`
+        )
+      )
       try {
-        const result = await executeLocalTool(toolName, params || {})
+        const result = await executeLocalTool(toolName, params || {}, { deviceMeta })
         dws.send(JSON.stringify({ type: 'tool_response', requestId, result }))
       } catch (err) {
         dws.send(JSON.stringify({ type: 'tool_response', requestId, error: err.message }))
@@ -3126,18 +3599,53 @@ function connectLocalDevice() {
  * Execute a local tool request (file operations, shell commands).
  * Same capabilities as User Computer Host localTools.
  */
-async function executeLocalTool(toolName, params) {
+async function executeLocalTool(toolName, params, context = {}) {
   const fs = await import('fs/promises')
+
+  // If this desktop receives a phone_* tool but no ADB is available, give a clear error
+  if (toolName.startsWith('phone_') && context.deviceMeta?.deviceType !== 'phone') {
+    try {
+      const { runAdb } = await import('../tools/definitions/phoneAdbHelper.js')
+      const check = await runAdb(['devices'], { timeoutMs: 3000 })
+      const lines = check.stdout
+        .toString('utf8')
+        .split('\n')
+        .filter((l) => l.includes('\tdevice'))
+      if (lines.length === 0) {
+        throw new Error(
+          'No ADB-connected phone found on this computer. ' +
+            'Connect a phone via USB/wireless ADB, or use a native phone app connection instead.'
+        )
+      }
+    } catch (e) {
+      if (e.message.includes('No ADB-connected phone')) throw e
+      throw new Error(
+        'ADB not available on this computer. Install ADB or connect a phone via the native app.'
+      )
+    }
+  }
 
   switch (toolName) {
     case 'list_files': {
       const dirPath = path.resolve(workspace, params.path || '.')
       const maxDepth = params.maxDepth || 1
-      const IGNORED = new Set(['.git', 'node_modules', '__pycache__', '.next', '.venv', 'dist', '.cache'])
+      const IGNORED = new Set([
+        '.git',
+        'node_modules',
+        '__pycache__',
+        '.next',
+        '.venv',
+        'dist',
+        '.cache',
+      ])
 
       async function buildTree(dir, depth) {
         let entries
-        try { entries = await fs.readdir(dir, { withFileTypes: true }) } catch { return [] }
+        try {
+          entries = await fs.readdir(dir, { withFileTypes: true })
+        } catch {
+          return []
+        }
         const nodes = []
         for (const entry of entries) {
           if (entry.name.startsWith('.') && IGNORED.has(entry.name)) continue
@@ -3149,7 +3657,9 @@ async function executeLocalTool(toolName, params) {
             const stat = await fs.stat(fullPath)
             node.size = stat.size
             node.modifiedAt = stat.mtime.toISOString()
-          } catch { /* skip stat errors */ }
+          } catch {
+            /* skip stat errors */
+          }
           if (isDir && depth < maxDepth) {
             node.children = await buildTree(fullPath, depth + 1)
           }
@@ -3168,21 +3678,27 @@ async function executeLocalTool(toolName, params) {
       }
       // Original flat mode (backward compatible)
       const entries = await fs.readdir(dirPath, { withFileTypes: true })
-      const files = await Promise.all(entries.map(async (entry) => {
-        const fullPath = path.join(dirPath, entry.name)
-        try {
-          const stat = await fs.stat(fullPath)
-          return {
-            name: entry.name,
-            path: fullPath,
-            type: entry.isDirectory() ? 'directory' : 'file',
-            size: stat.size,
-            modifiedAt: stat.mtime.toISOString(),
+      const files = await Promise.all(
+        entries.map(async (entry) => {
+          const fullPath = path.join(dirPath, entry.name)
+          try {
+            const stat = await fs.stat(fullPath)
+            return {
+              name: entry.name,
+              path: fullPath,
+              type: entry.isDirectory() ? 'directory' : 'file',
+              size: stat.size,
+              modifiedAt: stat.mtime.toISOString(),
+            }
+          } catch {
+            return {
+              name: entry.name,
+              path: fullPath,
+              type: entry.isDirectory() ? 'directory' : 'file',
+            }
           }
-        } catch {
-          return { name: entry.name, path: fullPath, type: entry.isDirectory() ? 'directory' : 'file' }
-        }
-      }))
+        })
+      )
       return { files }
     }
 
@@ -3218,7 +3734,7 @@ async function executeLocalTool(toolName, params) {
           timeout: params.timeout || 30000,
           encoding: 'utf-8',
           maxBuffer: 1024 * 1024,
-          stdio: ['pipe', 'pipe', 'pipe'],  // capture stderr instead of printing to terminal
+          stdio: ['pipe', 'pipe', 'pipe'], // capture stderr instead of printing to terminal
         })
         return { stdout: result, exitCode: 0 }
       } catch (execErr) {
@@ -3235,7 +3751,10 @@ async function executeLocalTool(toolName, params) {
     // These run ADB on the user's machine to control a USB-connected Android phone.
     case 'phone_tap': {
       const { runAdbShell } = await import('../tools/definitions/phoneAdbHelper.js')
-      const result = await runAdbShell(`input tap ${Math.round(params.x)} ${Math.round(params.y)}`, { serial: params.serial })
+      const result = await runAdbShell(
+        `input tap ${Math.round(params.x)} ${Math.round(params.y)}`,
+        { serial: params.serial }
+      )
       if (result.exitCode !== 0) throw new Error(result.stderr || result.stdout)
       return { content: [{ type: 'text', text: `✅ Tapped at (${params.x}, ${params.y})` }] }
     }
@@ -3248,7 +3767,14 @@ async function executeLocalTool(toolName, params) {
         { serial: params.serial }
       )
       if (result.exitCode !== 0) throw new Error(result.stderr || result.stdout)
-      return { content: [{ type: 'text', text: `✅ Swiped (${params.x1},${params.y1}) → (${params.x2},${params.y2})` }] }
+      return {
+        content: [
+          {
+            type: 'text',
+            text: `✅ Swiped (${params.x1},${params.y1}) → (${params.x2},${params.y2})`,
+          },
+        ],
+      }
     }
 
     case 'phone_type_text': {
@@ -3268,7 +3794,14 @@ async function executeLocalTool(toolName, params) {
         )
         if (result.exitCode !== 0) throw new Error(result.stderr || result.stdout)
       }
-      return { content: [{ type: 'text', text: `✅ Typed: "${text.slice(0, 50)}${text.length > 50 ? '...' : ''}"` }] }
+      return {
+        content: [
+          {
+            type: 'text',
+            text: `✅ Typed: "${text.slice(0, 50)}${text.length > 50 ? '...' : ''}"`,
+          },
+        ],
+      }
     }
 
     case 'phone_press_key': {
@@ -3276,9 +3809,22 @@ async function executeLocalTool(toolName, params) {
       const key = params.key
       if (!key) throw new Error('key is required')
       // Simple keycode mapping for common keys
-      const keyMap = { home: 3, back: 4, enter: 66, delete: 67, power: 26, volume_up: 24, volume_down: 25, tab: 61, recent_apps: 187, notification: 83 }
+      const keyMap = {
+        home: 3,
+        back: 4,
+        enter: 66,
+        delete: 67,
+        power: 26,
+        volume_up: 24,
+        volume_down: 25,
+        tab: 61,
+        recent_apps: 187,
+        notification: 83,
+      }
       const keycode = keyMap[key.toLowerCase()] || parseInt(key, 10) || key
-      const cmd = params.long_press ? `input keyevent --longpress ${keycode}` : `input keyevent ${keycode}`
+      const cmd = params.long_press
+        ? `input keyevent --longpress ${keycode}`
+        : `input keyevent ${keycode}`
       const result = await runAdbShell(cmd, { serial: params.serial })
       if (result.exitCode !== 0) throw new Error(result.stderr || result.stdout)
       return { content: [{ type: 'text', text: `✅ Pressed key: ${key}` }] }
@@ -3288,10 +3834,16 @@ async function executeLocalTool(toolName, params) {
       const { adbScreenshot } = await import('../tools/definitions/phoneAdbHelper.js')
       const screenshot = await adbScreenshot({ serial: params.serial })
       return {
-        content: [{
-          type: 'image',
-          source: { type: 'base64', media_type: screenshot.mediaType || 'image/png', data: screenshot.base64 },
-        }],
+        content: [
+          {
+            type: 'image',
+            source: {
+              type: 'base64',
+              media_type: screenshot.mediaType || 'image/png',
+              data: screenshot.base64,
+            },
+          },
+        ],
       }
     }
 
@@ -3304,7 +3856,14 @@ async function executeLocalTool(toolName, params) {
         return `[${i}] "${label}" — tap(${el.center.x}, ${el.center.y})  ${el.bounds}`
       })
       return {
-        content: [{ type: 'text', text: elements.length ? `Found ${elements.length} elements:\n\n${lines.join('\n')}` : 'No interactive elements found.' }],
+        content: [
+          {
+            type: 'text',
+            text: elements.length
+              ? `Found ${elements.length} elements:\n\n${lines.join('\n')}`
+              : 'No interactive elements found.',
+          },
+        ],
         structuredContent: { elements, count: elements.length },
       }
     }
@@ -3314,7 +3873,9 @@ async function executeLocalTool(toolName, params) {
       const app = params.app
       if (!app) throw new Error('app is required')
       // Try monkey launch (works for most apps)
-      const result = await runAdbShell(`monkey -p ${app} -c android.intent.category.LAUNCHER 1`, { serial: params.serial })
+      const result = await runAdbShell(`monkey -p ${app} -c android.intent.category.LAUNCHER 1`, {
+        serial: params.serial,
+      })
       if (result.exitCode !== 0) throw new Error(result.stderr || result.stdout)
       return { content: [{ type: 'text', text: `✅ Launched: ${app}` }] }
     }
@@ -3322,38 +3883,82 @@ async function executeLocalTool(toolName, params) {
     case 'phone_list_apps': {
       const { runAdbShell } = await import('../tools/definitions/phoneAdbHelper.js')
       const flag = params.third_party_only !== false ? '-3' : ''
-      const result = await runAdbShell(`pm list packages ${flag}`, { serial: params.serial, timeoutMs: 10000 })
+      const result = await runAdbShell(`pm list packages ${flag}`, {
+        serial: params.serial,
+        timeoutMs: 10000,
+      })
       if (result.exitCode !== 0) throw new Error(result.stderr || result.stdout)
-      let packages = result.stdout.split('\n').map(l => l.replace('package:', '').trim()).filter(Boolean)
+      let packages = result.stdout
+        .split('\n')
+        .map((l) => l.replace('package:', '').trim())
+        .filter(Boolean)
       if (params.filter) {
         const f = params.filter.toLowerCase()
-        packages = packages.filter(p => p.toLowerCase().includes(f))
+        packages = packages.filter((p) => p.toLowerCase().includes(f))
       }
-      return { content: [{ type: 'text', text: packages.length ? packages.join('\n') : 'No matching apps found.' }] }
+      return {
+        content: [
+          { type: 'text', text: packages.length ? packages.join('\n') : 'No matching apps found.' },
+        ],
+      }
     }
 
     case 'phone_shell': {
       const { runAdbShell } = await import('../tools/definitions/phoneAdbHelper.js')
       if (!params.command) throw new Error('command is required')
-      const result = await runAdbShell(params.command, { serial: params.serial, timeoutMs: params.timeout_ms || 15000 })
+      const result = await runAdbShell(params.command, {
+        serial: params.serial,
+        timeoutMs: params.timeout_ms || 15000,
+      })
       const output = [result.stdout, result.stderr].filter(Boolean).join('\n').trim()
       return {
-        content: [{ type: 'text', text: result.exitCode === 0 ? (output || '(no output)') : `Exit code ${result.exitCode}\n${output}` }],
-        structuredContent: { command: params.command, exitCode: result.exitCode, stdout: result.stdout, stderr: result.stderr },
+        content: [
+          {
+            type: 'text',
+            text:
+              result.exitCode === 0
+                ? output || '(no output)'
+                : `Exit code ${result.exitCode}\n${output}`,
+          },
+        ],
+        structuredContent: {
+          command: params.command,
+          exitCode: result.exitCode,
+          stdout: result.stdout,
+          stderr: result.stderr,
+        },
       }
     }
 
     // ── Phone compound actions (batch execution) ──────────────────────────
     case 'phone_execute_actions': {
-      const { runAdbShell: adbShell, adbScreenshot: adbShot, adbDumpUi: adbUi, parseUiElements: parseUi } =
-        await import('../tools/definitions/phoneAdbHelper.js')
+      const {
+        runAdbShell: adbShell,
+        adbScreenshot: adbShot,
+        adbDumpUi: adbUi,
+        parseUiElements: parseUi,
+      } = await import('../tools/definitions/phoneAdbHelper.js')
 
       const actions = params.actions
       if (!actions || !Array.isArray(actions) || actions.length === 0) {
         throw new Error('actions array is required and must not be empty')
       }
 
-      const keyMap = { home: 3, back: 4, enter: 66, delete: 67, power: 26, volume_up: 24, volume_down: 25, tab: 61, recent_apps: 187, notification: 83, menu: 82, space: 62, escape: 111 }
+      const keyMap = {
+        home: 3,
+        back: 4,
+        enter: 66,
+        delete: 67,
+        power: 26,
+        volume_up: 24,
+        volume_down: 25,
+        tab: 61,
+        recent_apps: 187,
+        notification: 83,
+        menu: 82,
+        space: 62,
+        escape: 111,
+      }
       const adbOpts = { serial: params.serial }
       const startTime = Date.now()
       const results = []
@@ -3364,14 +3969,20 @@ async function executeLocalTool(toolName, params) {
         try {
           switch (act.action) {
             case 'tap': {
-              const r = await adbShell(`input tap ${Math.round(act.x)} ${Math.round(act.y)}`, adbOpts)
+              const r = await adbShell(
+                `input tap ${Math.round(act.x)} ${Math.round(act.y)}`,
+                adbOpts
+              )
               if (r.exitCode !== 0) throw new Error(r.stderr || r.stdout)
               results.push({ action: 'tap', x: act.x, y: act.y, status: 'ok' })
               break
             }
             case 'swipe': {
               const dur = act.duration_ms || 300
-              const r = await adbShell(`input swipe ${Math.round(act.x)} ${Math.round(act.y)} ${Math.round(act.x2)} ${Math.round(act.y2)} ${Math.round(dur)}`, adbOpts)
+              const r = await adbShell(
+                `input swipe ${Math.round(act.x)} ${Math.round(act.y)} ${Math.round(act.x2)} ${Math.round(act.y2)} ${Math.round(dur)}`,
+                adbOpts
+              )
               if (r.exitCode !== 0) throw new Error(r.stderr || r.stdout)
               results.push({ action: 'swipe', status: 'ok' })
               break
@@ -3384,7 +3995,10 @@ async function executeLocalTool(toolName, params) {
                 const r = await adbShell(`input text "${escaped}"`, adbOpts)
                 if (r.exitCode !== 0) throw new Error(r.stderr || r.stdout)
               } else {
-                const r = await adbShell(`am broadcast -a ADB_INPUT_TEXT --es msg '${act.text.replace(/'/g, "'\\''")}'`, adbOpts)
+                const r = await adbShell(
+                  `am broadcast -a ADB_INPUT_TEXT --es msg '${act.text.replace(/'/g, "'\\''")}'`,
+                  adbOpts
+                )
                 if (r.exitCode !== 0) throw new Error(r.stderr || r.stdout)
               }
               results.push({ action: 'type', status: 'ok' })
@@ -3393,7 +4007,9 @@ async function executeLocalTool(toolName, params) {
             case 'press_key': {
               if (!act.key) throw new Error('press_key requires key')
               const keycode = keyMap[act.key.toLowerCase()] || parseInt(act.key, 10) || act.key
-              const cmd = act.long_press ? `input keyevent --longpress ${keycode}` : `input keyevent ${keycode}`
+              const cmd = act.long_press
+                ? `input keyevent --longpress ${keycode}`
+                : `input keyevent ${keycode}`
               const r = await adbShell(cmd, adbOpts)
               if (r.exitCode !== 0) throw new Error(r.stderr || r.stdout)
               results.push({ action: 'press_key', key: act.key, status: 'ok' })
@@ -3401,21 +4017,27 @@ async function executeLocalTool(toolName, params) {
             }
             case 'launch_app': {
               if (!act.app) throw new Error('launch_app requires app')
-              const r = await adbShell(`monkey -p ${act.app} -c android.intent.category.LAUNCHER 1`, adbOpts)
+              const r = await adbShell(
+                `monkey -p ${act.app} -c android.intent.category.LAUNCHER 1`,
+                adbOpts
+              )
               if (r.exitCode !== 0) throw new Error(r.stderr || r.stdout)
               results.push({ action: 'launch_app', app: act.app, status: 'ok' })
               break
             }
             case 'open_url': {
               if (!act.url) throw new Error('open_url requires url')
-              const r = await adbShell(`am start -a android.intent.action.VIEW -d '${act.url}'`, adbOpts)
+              const r = await adbShell(
+                `am start -a android.intent.action.VIEW -d '${act.url}'`,
+                adbOpts
+              )
               if (r.exitCode !== 0) throw new Error(r.stderr || r.stdout)
               results.push({ action: 'open_url', status: 'ok' })
               break
             }
             case 'wait': {
               const ms = act.ms || 500
-              await new Promise(r => setTimeout(r, ms))
+              await new Promise((r) => setTimeout(r, ms))
               results.push({ action: 'wait', ms, status: 'ok' })
               break
             }
@@ -3423,7 +4045,14 @@ async function executeLocalTool(toolName, params) {
               const shot = await adbShot(adbOpts)
               results.push({ action: 'screenshot', status: 'ok', sizeKB: shot.sizeKB })
               contentParts.push({ type: 'text', text: `📸 Checkpoint after step ${i + 1}:` })
-              contentParts.push({ type: 'image', source: { type: 'base64', media_type: shot.mediaType || 'image/png', data: shot.base64 } })
+              contentParts.push({
+                type: 'image',
+                source: {
+                  type: 'base64',
+                  media_type: shot.mediaType || 'image/png',
+                  data: shot.base64,
+                },
+              })
               break
             }
             case 'get_ui': {
@@ -3434,7 +4063,10 @@ async function executeLocalTool(toolName, params) {
                 return `[${idx}] "${label}" — tap(${el.center.x}, ${el.center.y})  ${el.bounds}`
               })
               results.push({ action: 'get_ui', status: 'ok', count: elements.length })
-              contentParts.push({ type: 'text', text: `🔍 UI after step ${i + 1}: ${elements.length} elements\n${lines.join('\n')}` })
+              contentParts.push({
+                type: 'text',
+                text: `🔍 UI after step ${i + 1}: ${elements.length} elements\n${lines.join('\n')}`,
+              })
               break
             }
             default:
@@ -3445,13 +4077,33 @@ async function executeLocalTool(toolName, params) {
           log(`[phone_execute_actions] Step ${i + 1} (${act.action}) failed: ${err.message}`)
           // Capture failure screenshot
           let failShot = null
-          try { failShot = await adbShot(adbOpts) } catch { /* ignore */ }
-          const failContent = [{ type: 'text', text: `❌ Failed at step ${i + 1}/${actions.length} (${act.action}): ${err.message}\nCompleted ${i}/${actions.length} in ${elapsed}ms.` }]
+          try {
+            failShot = await adbShot(adbOpts)
+          } catch {
+            /* ignore */
+          }
+          const failContent = [
+            {
+              type: 'text',
+              text: `❌ Failed at step ${i + 1}/${actions.length} (${act.action}): ${err.message}\nCompleted ${i}/${actions.length} in ${elapsed}ms.`,
+            },
+          ]
           if (failShot) {
             failContent.push({ type: 'text', text: '📸 Screen at failure:' })
-            failContent.push({ type: 'image', source: { type: 'base64', media_type: failShot.mediaType || 'image/png', data: failShot.base64 } })
+            failContent.push({
+              type: 'image',
+              source: {
+                type: 'base64',
+                media_type: failShot.mediaType || 'image/png',
+                data: failShot.base64,
+              },
+            })
           }
-          return { content: [...contentParts, ...failContent], isError: true, structuredContent: { results, failedAt: i, error: err.message, elapsed_ms: elapsed } }
+          return {
+            content: [...contentParts, ...failContent],
+            isError: true,
+            structuredContent: { results, failedAt: i, error: err.message, elapsed_ms: elapsed },
+          }
         }
       }
 
@@ -3460,15 +4112,34 @@ async function executeLocalTool(toolName, params) {
       if (params.final_screenshot !== false && lastAct !== 'screenshot' && lastAct !== 'get_ui') {
         try {
           const finalShot = await adbShot(adbOpts)
-          contentParts.push({ type: 'text', text: `✅ All ${actions.length} actions done in ${elapsed}ms. Final screen:` })
-          contentParts.push({ type: 'image', source: { type: 'base64', media_type: finalShot.mediaType || 'image/png', data: finalShot.base64 } })
+          contentParts.push({
+            type: 'text',
+            text: `✅ All ${actions.length} actions done in ${elapsed}ms. Final screen:`,
+          })
+          contentParts.push({
+            type: 'image',
+            source: {
+              type: 'base64',
+              media_type: finalShot.mediaType || 'image/png',
+              data: finalShot.base64,
+            },
+          })
         } catch {
-          contentParts.push({ type: 'text', text: `✅ All ${actions.length} actions done in ${elapsed}ms.` })
+          contentParts.push({
+            type: 'text',
+            text: `✅ All ${actions.length} actions done in ${elapsed}ms.`,
+          })
         }
       } else {
-        contentParts.push({ type: 'text', text: `✅ All ${actions.length} actions done in ${elapsed}ms.` })
+        contentParts.push({
+          type: 'text',
+          text: `✅ All ${actions.length} actions done in ${elapsed}ms.`,
+        })
       }
-      return { content: contentParts, structuredContent: { results, elapsed_ms: elapsed, totalActions: actions.length } }
+      return {
+        content: contentParts,
+        structuredContent: { results, elapsed_ms: elapsed, totalActions: actions.length },
+      }
     }
 
     // ── Browser tools (local Chrome via CDP) ────────────────────────────────
@@ -3483,10 +4154,18 @@ async function executeLocalTool(toolName, params) {
       const bridge = getLocalBrowserBridge()
       if (!bridge) throw new Error('No browser session — call browser_navigate first')
       await bridge.cdpCommand('Input.dispatchMouseEvent', {
-        type: 'mousePressed', x: params.x, y: params.y, button: 'left', clickCount: 1,
+        type: 'mousePressed',
+        x: params.x,
+        y: params.y,
+        button: 'left',
+        clickCount: 1,
       })
       await bridge.cdpCommand('Input.dispatchMouseEvent', {
-        type: 'mouseReleased', x: params.x, y: params.y, button: 'left', clickCount: 1,
+        type: 'mouseReleased',
+        x: params.x,
+        y: params.y,
+        button: 'left',
+        clickCount: 1,
       })
       return { content: [{ type: 'text', text: `✅ Clicked at (${params.x}, ${params.y})` }] }
     }
@@ -3496,10 +4175,12 @@ async function executeLocalTool(toolName, params) {
       if (!bridge) throw new Error('No browser session — call browser_navigate first')
       const result = await bridge.cdpCommand('Page.captureScreenshot', { format: 'png' })
       return {
-        content: [{
-          type: 'image',
-          source: { type: 'base64', media_type: 'image/png', data: result.data },
-        }],
+        content: [
+          {
+            type: 'image',
+            source: { type: 'base64', media_type: 'image/png', data: result.data },
+          },
+        ],
       }
     }
 
@@ -3509,12 +4190,27 @@ async function executeLocalTool(toolName, params) {
       const text = params.text || ''
       if (params.submit) {
         await bridge.cdpCommand('Input.insertText', { text })
-        await bridge.cdpCommand('Input.dispatchKeyEvent', { type: 'keyDown', key: 'Enter', code: 'Enter' })
-        await bridge.cdpCommand('Input.dispatchKeyEvent', { type: 'keyUp', key: 'Enter', code: 'Enter' })
+        await bridge.cdpCommand('Input.dispatchKeyEvent', {
+          type: 'keyDown',
+          key: 'Enter',
+          code: 'Enter',
+        })
+        await bridge.cdpCommand('Input.dispatchKeyEvent', {
+          type: 'keyUp',
+          key: 'Enter',
+          code: 'Enter',
+        })
       } else {
         await bridge.cdpCommand('Input.insertText', { text })
       }
-      return { content: [{ type: 'text', text: `✅ Typed: "${text.slice(0, 50)}${text.length > 50 ? '...' : ''}"` }] }
+      return {
+        content: [
+          {
+            type: 'text',
+            text: `✅ Typed: "${text.slice(0, 50)}${text.length > 50 ? '...' : ''}"`,
+          },
+        ],
+      }
     }
 
     case 'browser_scroll': {
@@ -3524,7 +4220,11 @@ async function executeLocalTool(toolName, params) {
       const amount = params.amount || 3
       const deltaY = dir === 'up' ? -100 * amount : 100 * amount
       await bridge.cdpCommand('Input.dispatchMouseEvent', {
-        type: 'mouseWheel', x: 640, y: 400, deltaX: 0, deltaY,
+        type: 'mouseWheel',
+        x: 640,
+        y: 400,
+        deltaX: 0,
+        deltaY,
       })
       return { content: [{ type: 'text', text: `✅ Scrolled ${dir} (${amount} notches)` }] }
     }
@@ -3590,8 +4290,12 @@ async function executeLocalTool(toolName, params) {
 async function launchLocalBrowserAndNavigate(url) {
   // Normalize URL
   let normalizedUrl = url.trim()
-  const hasProtocol = normalizedUrl.startsWith('http://') || normalizedUrl.startsWith('https://') || normalizedUrl.startsWith('file://')
-  const looksLikeUrl = hasProtocol || normalizedUrl.includes('.') || normalizedUrl.startsWith('localhost')
+  const hasProtocol =
+    normalizedUrl.startsWith('http://') ||
+    normalizedUrl.startsWith('https://') ||
+    normalizedUrl.startsWith('file://')
+  const looksLikeUrl =
+    hasProtocol || normalizedUrl.includes('.') || normalizedUrl.startsWith('localhost')
   if (looksLikeUrl) {
     if (!hasProtocol) normalizedUrl = `https://${normalizedUrl}`
   } else {
@@ -3622,7 +4326,14 @@ async function launchLocalBrowserAndNavigate(url) {
   // Emit device:liveview for Browser tab
   emitDeviceLiveView(browserRelayUrl, browserRelayUrl, 'browser')
 
-  return { content: [{ type: 'text', text: `✅ Browser opened: ${normalizedUrl}\n\nThe browser is now visible in the Workspace Panel's Browser tab.` }] }
+  return {
+    content: [
+      {
+        type: 'text',
+        text: `✅ Browser opened: ${normalizedUrl}\n\nThe browser is now visible in the Workspace Panel's Browser tab.`,
+      },
+    ],
+  }
 }
 
 // ── Graceful shutdown ──────────────────────────────────────────────────────
@@ -3635,20 +4346,36 @@ function shutdown() {
   console.log(chalk.dim('  • Configure SaaS Work Environments'))
   console.log(chalk.dim('  • Create Bot Identities Across Channels'))
   console.log('')
-  console.log(chalk.dim('  Visit ') + chalk.cyan.underline('https://office.xyz') + chalk.dim(' to manage your agents'))
+  console.log(
+    chalk.dim('  Visit ') +
+      chalk.cyan.underline('https://office.xyz') +
+      chalk.dim(' to manage your agents')
+  )
   console.log('')
   // Stop registry heartbeat and unregister MCP server
   stopRegistryHeartbeat()
   unregisterMcpServer()
   for (const [, entry] of activeChildren) {
-    try { entry?.child?.kill('SIGTERM') } catch { /* ignore */ }
+    try {
+      entry?.child?.kill('SIGTERM')
+    } catch {
+      /* ignore */
+    }
   }
   activeChildren.clear()
   if (wsRef) {
-    try { wsRef.close(1000, 'shutdown') } catch { /* ignore */ }
+    try {
+      wsRef.close(1000, 'shutdown')
+    } catch {
+      /* ignore */
+    }
   }
   if (deviceWsRef) {
-    try { deviceWsRef.close(1000, 'shutdown') } catch { /* ignore */ }
+    try {
+      deviceWsRef.close(1000, 'shutdown')
+    } catch {
+      /* ignore */
+    }
   }
   // Stop local browser bridge + Chrome
   stopLocalBrowserBridge()
@@ -3674,7 +4401,11 @@ async function startup() {
 
     // Check for provider API key (only for non-claude providers)
     if (providerConfig.envCheck && !process.env[providerConfig.envCheck]) {
-      log(chalk.yellow(`Warning: ${providerConfig.envCheck} not set. ${argv.provider} may fail to start.`))
+      log(
+        chalk.yellow(
+          `Warning: ${providerConfig.envCheck} not set. ${argv.provider} may fail to start.`
+        )
+      )
     }
 
     connect()
