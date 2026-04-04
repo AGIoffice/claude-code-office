@@ -3331,9 +3331,6 @@ async function detectAndRegisterAdbDevices(dws, officeId, agentHandle, parentDev
             platform: 'android',
             capabilities: ['phone_adb', 'screen_mirror'],
             serial,
-            agentBound: true,
-            boundAgentHandle: agentHandle,
-            officeWide: false,
           },
         })
       )
@@ -3467,10 +3464,7 @@ function connectLocalDevice() {
           deviceType: 'local-agent',
           hostname: os.hostname(),
           platform: `${os.platform()}-${os.arch()}`,
-          capabilities: ['file_ops', 'exec_command', 'computer_use', 'phone_adb'],
-          agentBound: true,
-          boundAgentHandle: agentHandle,
-          officeWide: false,
+          capabilities: ['file_ops', 'exec_command', 'computer_use'],
           deviceId: persistedDeviceId || undefined,
         },
       })
