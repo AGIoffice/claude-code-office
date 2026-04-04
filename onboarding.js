@@ -24,9 +24,7 @@ const SESSION_DIR = path.join(os.homedir(), '.office-xyz')
 const SESSION_FILE = path.join(SESSION_DIR, 'session.json')
 
 const CHAT_BRIDGE_URL =
-  process.env.CHAT_BRIDGE_URL ||
-  process.env.CHAT_BRIDGE_HTTP_URL ||
-  'https://chatbridge.aladdinagi.xyz'
+  process.env.CHAT_BRIDGE_URL || process.env.CHAT_BRIDGE_HTTP_URL || 'http://localhost:3020'
 
 const PKG_NAME = '@office-xyz/claude-code'
 
@@ -63,7 +61,12 @@ async function checkClaudeCodeCli() {
     console.log(chalk.dim('  Auth: Claude login session ✓'))
   } catch (err) {
     const msg = (err.stderr || err.stdout || err.message || '').toLowerCase()
-    if (msg.includes('credit') || msg.includes('balance') || msg.includes('unauthorized') || msg.includes('auth')) {
+    if (
+      msg.includes('credit') ||
+      msg.includes('balance') ||
+      msg.includes('unauthorized') ||
+      msg.includes('auth')
+    ) {
       console.log(chalk.red('  Claude Code is not logged in.'))
       console.log('')
       console.log(chalk.white('  Run this first:'))
@@ -111,7 +114,10 @@ export async function checkForUpdate() {
     const latest = latestVersion.split('.').map(Number)
     let isNewer = false
     for (let i = 0; i < 3; i++) {
-      if ((latest[i] || 0) > (current[i] || 0)) { isNewer = true; break }
+      if ((latest[i] || 0) > (current[i] || 0)) {
+        isNewer = true
+        break
+      }
       if ((latest[i] || 0) < (current[i] || 0)) break
     }
 
@@ -154,12 +160,18 @@ function _houseRow(house, info) {
 export function printBanner({ email, agentHandle, model, workspace } = {}) {
   const h = chalk.hex(HOUSE_COLOR)
   const b = chalk.hex(BRAND_COLOR)
-  const pkg = (() => { try { return require('./package.json') } catch { return {} } })()
+  const pkg = (() => {
+    try {
+      return require('./package.json')
+    } catch {
+      return {}
+    }
+  })()
   const version = pkg.version ? `v${pkg.version}` : ''
   const label = ` Office.xyz ${version} `
   const innerW = 72
-  const leftColW = 28  // visual width for left column (house + info)
-  const _strip = s => s.replace(/\x1b\[[0-9;]*m/g, '')
+  const leftColW = 28 // visual width for left column (house + info)
+  const _strip = (s) => s.replace(/\x1b\[[0-9;]*m/g, '')
 
   // Build left column
   const userName = email ? email.split('@')[0] : ''
@@ -168,7 +180,7 @@ export function printBanner({ email, agentHandle, model, workspace } = {}) {
     '',
     chalk.bold(welcome.length > leftColW ? welcome.slice(0, leftColW - 1) + '…' : welcome),
     '',
-    ...HOUSE_LINES.map(l => h(l)),
+    ...HOUSE_LINES.map((l) => h(l)),
     '',
     model ? chalk.dim(model) : '',
     workspace ? chalk.dim(workspace) : '',
@@ -210,14 +222,11 @@ export function printClockInBanner({ agentHandle, model, seat, workspace }) {
   const h = chalk.hex(HOUSE_COLOR)
   const b = chalk.hex(BRAND_COLOR)
   const d = chalk.dim
-  const _strip = s => s.replace(/\x1b\[[0-9;]*m/g, '')
+  const _strip = (s) => s.replace(/\x1b\[[0-9;]*m/g, '')
   const innerW = 72
   const leftColW = 20
 
-  const leftLines = [
-    '',
-    ...HOUSE_LINES.map(l => h(l)),
-  ]
+  const leftLines = ['', ...HOUSE_LINES.map((l) => h(l))]
 
   // Use non-breaking space for intentional blank lines ('' would be falsy)
   const _ = ' '
@@ -292,7 +301,9 @@ export function clearSession() {
     if (existsSync(SESSION_FILE)) {
       writeFileSync(SESSION_FILE, '{}', 'utf-8')
     }
-  } catch { /* ignore */ }
+  } catch {
+    /* ignore */
+  }
 }
 
 // ── API Helpers ───────────────────────────────────────────────────────────
@@ -335,11 +346,13 @@ async function browserLogin() {
 
     const startTime = Date.now()
     while (Date.now() - startTime < POLL_TIMEOUT) {
-      await new Promise(r => setTimeout(r, POLL_INTERVAL))
+      await new Promise((r) => setTimeout(r, POLL_INTERVAL))
       const result = await api('GET', `/api/cli/auth/poll?token=${pollToken}`)
 
       if (result.status === 'complete') {
-        pollSpinner.succeed(chalk.green(`Logged in as ${result.session.email || result.session.userId}`))
+        pollSpinner.succeed(
+          chalk.green(`Logged in as ${result.session.email || result.session.userId}`)
+        )
         return { session: result.session, offices: result.offices || [] }
       }
       if (result.status === 'expired') {
@@ -361,14 +374,14 @@ async function browserLogin() {
 async function selectOrCreateOffice(offices, sessionToken) {
   if (offices.length === 0) {
     // No offices — must create
-    console.log(chalk.dim('  You don\'t have any offices yet. Let\'s create one!'))
+    console.log(chalk.dim("  You don't have any offices yet. Let's create one!"))
     console.log('')
     return createOffice(sessionToken)
   }
 
   // Show offices with "Create new" option
   const choices = [
-    ...offices.map(o => ({
+    ...offices.map((o) => ({
       name: `${o.domain || o.slug || o.displayName}  ${chalk.dim(`${o.agentCount || 0} agents`)}`,
       value: o.id,
     })),
@@ -387,7 +400,7 @@ async function selectOrCreateOffice(offices, sessionToken) {
     return createOffice(sessionToken)
   }
 
-  const selected = offices.find(o => o.id === choice)
+  const selected = offices.find((o) => o.id === choice)
   return {
     officeId: selected.id,
     domain: selected.domain || selected.slug,
@@ -400,7 +413,10 @@ async function createOffice(sessionToken) {
     validate: (v) => v.trim().length > 0 || 'Name is required',
   })
 
-  let slug = name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '')
+  let slug = name
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-|-$/g, '')
 
   // Check availability
   const spinner = ora(`Checking ${slug}.office.xyz...`).start()
@@ -434,31 +450,51 @@ async function createOffice(sessionToken) {
 // ── Role Selection ────────────────────────────────────────────────────────
 
 const ROLE_CATEGORIES = [
-  { id: 'business',  icon: '💼', label: 'Business',   description: 'Operations, Marketing, Sales, Support, Executive, HR' },
-  { id: 'science',   icon: '🔬', label: 'Science',    description: 'Research, Data Science, Bioinformatics, Lab, Clinical' },
-  { id: 'developer', icon: '💻', label: 'Developer',  description: 'Full-Stack, Frontend, Backend, DevOps, AI Engineering' },
-  { id: 'education', icon: '📖', label: 'Education',  description: 'Learning, Tutoring, Knowledge Exploration' },
+  {
+    id: 'business',
+    icon: '💼',
+    label: 'Business',
+    description: 'Operations, Marketing, Sales, Support, Executive, HR',
+  },
+  {
+    id: 'science',
+    icon: '🔬',
+    label: 'Science',
+    description: 'Research, Data Science, Bioinformatics, Lab, Clinical',
+  },
+  {
+    id: 'developer',
+    icon: '💻',
+    label: 'Developer',
+    description: 'Full-Stack, Frontend, Backend, DevOps, AI Engineering',
+  },
+  {
+    id: 'education',
+    icon: '📖',
+    label: 'Education',
+    description: 'Learning, Tutoring, Knowledge Exploration',
+  },
 ]
 
 const ROLES = [
   // Business
-  { id: 'operations',  category: 'business',  icon: '📈', label: 'Operations' },
-  { id: 'marketing',   category: 'business',  icon: '📣', label: 'Marketing' },
-  { id: 'sales',       category: 'business',  icon: '🤝', label: 'Sales' },
-  { id: 'support',     category: 'business',  icon: '💬', label: 'Support' },
-  { id: 'executive',   category: 'business',  icon: '👔', label: 'Executive' },
-  { id: 'hr',          category: 'business',  icon: '👥', label: 'HR' },
+  { id: 'operations', category: 'business', icon: '📈', label: 'Operations' },
+  { id: 'marketing', category: 'business', icon: '📣', label: 'Marketing' },
+  { id: 'sales', category: 'business', icon: '🤝', label: 'Sales' },
+  { id: 'support', category: 'business', icon: '💬', label: 'Support' },
+  { id: 'executive', category: 'business', icon: '👔', label: 'Executive' },
+  { id: 'hr', category: 'business', icon: '👥', label: 'HR' },
   // Science
-  { id: 'researcher',      category: 'science', icon: '🔬', label: 'Researcher' },
-  { id: 'data-scientist',  category: 'science', icon: '📊', label: 'Data Scientist' },
-  { id: 'bioinformatics',  category: 'science', icon: '🧬', label: 'Bioinformatics' },
-  { id: 'lab-manager',     category: 'science', icon: '🧪', label: 'Lab Manager' },
-  { id: 'clinical',        category: 'science', icon: '🏥', label: 'Clinical' },
+  { id: 'researcher', category: 'science', icon: '🔬', label: 'Researcher' },
+  { id: 'data-scientist', category: 'science', icon: '📊', label: 'Data Scientist' },
+  { id: 'bioinformatics', category: 'science', icon: '🧬', label: 'Bioinformatics' },
+  { id: 'lab-manager', category: 'science', icon: '🧪', label: 'Lab Manager' },
+  { id: 'clinical', category: 'science', icon: '🏥', label: 'Clinical' },
   // Developer
   { id: 'fullstack', category: 'developer', icon: '🖥️', label: 'Full-Stack' },
-  { id: 'frontend',  category: 'developer', icon: '🎨', label: 'Frontend' },
-  { id: 'backend',   category: 'developer', icon: '⚙️',  label: 'Backend' },
-  { id: 'devops',    category: 'developer', icon: '🔧', label: 'DevOps' },
+  { id: 'frontend', category: 'developer', icon: '🎨', label: 'Frontend' },
+  { id: 'backend', category: 'developer', icon: '⚙️', label: 'Backend' },
+  { id: 'devops', category: 'developer', icon: '🔧', label: 'DevOps' },
   { id: 'ai-engineer', category: 'developer', icon: '🤖', label: 'AI Engineer' },
   // Education
   { id: 'learner', category: 'education', icon: '📖', label: 'Learner' },
@@ -467,23 +503,23 @@ const ROLES = [
 async function selectRole() {
   const category = await select({
     message: 'What does your agent do?',
-    choices: ROLE_CATEGORIES.map(c => ({
+    choices: ROLE_CATEGORIES.map((c) => ({
       name: `${c.icon} ${c.label}  ${chalk.dim(c.description)}`,
       value: c.id,
     })),
   })
 
-  const rolesInCategory = ROLES.filter(r => r.category === category)
+  const rolesInCategory = ROLES.filter((r) => r.category === category)
 
   const roleId = await select({
     message: 'Select a role:',
-    choices: rolesInCategory.map(r => ({
+    choices: rolesInCategory.map((r) => ({
       name: `${r.icon} ${r.label}`,
       value: r.id,
     })),
   })
 
-  const role = ROLES.find(r => r.id === roleId)
+  const role = ROLES.find((r) => r.id === roleId)
   return { roleId, roleCategory: category, roleLabel: role?.label || roleId }
 }
 
@@ -504,16 +540,22 @@ async function selectOrHireAgent(officeId, sessionToken) {
   // 1. Check for existing agents in this office
   let existingAgents = []
   try {
-    const data = await api('GET', `/api/cli/office/${encodeURIComponent(officeId)}/agents`, null, sessionToken)
+    const data = await api(
+      'GET',
+      `/api/cli/office/${encodeURIComponent(officeId)}/agents`,
+      null,
+      sessionToken
+    )
     existingAgents = data.agents || []
   } catch {
     // Continue — will go straight to hire
   }
 
   // Only show local Claude agents — cloud agents and non-Claude agents can't be clocked in from this CLI
-  const localAgents = existingAgents.filter(a =>
-    a.deploymentMode === 'local' &&
-    (a.provider === 'claude' || a.provider === 'claude-code' || a.provider === 'anthropic')
+  const localAgents = existingAgents.filter(
+    (a) =>
+      a.deploymentMode === 'local' &&
+      (a.provider === 'claude' || a.provider === 'claude-code' || a.provider === 'anthropic')
   )
 
   if (localAgents.length > 0) {
@@ -521,7 +563,7 @@ async function selectOrHireAgent(officeId, sessionToken) {
     const providerLabel = (p) => PROVIDER_LABELS[p] || p || 'unknown'
 
     const choices = [
-      ...localAgents.map(a => ({
+      ...localAgents.map((a) => ({
         name: `${a.name}  ${chalk.dim(`${a.role} · ${providerLabel(a.provider)} · ${a.seat || 'no seat'}`)}`,
         value: a.id,
       })),
@@ -538,18 +580,25 @@ async function selectOrHireAgent(officeId, sessionToken) {
 
     if (choice !== '__hire__') {
       // Reconnect existing agent
-      const agent = localAgents.find(a => a.id === choice)
+      const agent = localAgents.find((a) => a.id === choice)
       const spinner = ora('Reconnecting...').start()
       try {
-        const result = await api('POST', '/api/cli/office/hire', {
-          officeId,
-          agentName: agent.name,
-          provider: 'claude-code',
-          roleId: agent.role,
-          roleCategory: agent.roleCategory,
-        }, sessionToken)
+        const result = await api(
+          'POST',
+          '/api/cli/office/hire',
+          {
+            officeId,
+            agentName: agent.name,
+            provider: 'claude-code',
+            roleId: agent.role,
+            roleCategory: agent.roleCategory,
+          },
+          sessionToken
+        )
 
-        spinner.succeed(`Reconnected: ${chalk.bold(result.agentHandle)} ${chalk.dim(`(${agent.role})`)}${result.seat ? chalk.dim(` · seat: ${result.seat}`) : ''}`)
+        spinner.succeed(
+          `Reconnected: ${chalk.bold(result.agentHandle)} ${chalk.dim(`(${agent.role})`)}${result.seat ? chalk.dim(` · seat: ${result.seat}`) : ''}`
+        )
         return result
       } catch (err) {
         spinner.fail(`Failed to reconnect: ${err.message}`)
@@ -576,16 +625,23 @@ async function selectOrHireAgent(officeId, sessionToken) {
   // 4. Hire
   const spinner = ora('Setting up agent...').start()
   try {
-    const result = await api('POST', '/api/cli/office/hire', {
-      officeId,
-      agentName: agentName.trim().toLowerCase(),
-      provider: 'claude-code',
-      roleId,
-      roleCategory,
-      roleLabel,
-    }, sessionToken)
+    const result = await api(
+      'POST',
+      '/api/cli/office/hire',
+      {
+        officeId,
+        agentName: agentName.trim().toLowerCase(),
+        provider: 'claude-code',
+        roleId,
+        roleCategory,
+        roleLabel,
+      },
+      sessionToken
+    )
 
-    spinner.succeed(`Agent ready: ${chalk.bold(result.agentHandle)} ${chalk.dim(`(${roleLabel})`)}${result.seat ? chalk.dim(` · seat: ${result.seat}`) : ''}`)
+    spinner.succeed(
+      `Agent ready: ${chalk.bold(result.agentHandle)} ${chalk.dim(`(${roleLabel})`)}${result.seat ? chalk.dim(` · seat: ${result.seat}`) : ''}`
+    )
     return result
   } catch (err) {
     spinner.fail(`Failed to create agent: ${err.message}`)
@@ -606,12 +662,16 @@ export async function runOnboarding() {
   const cached = loadSession()
 
   // Show banner with cached user info if available
-  printBanner(cached?.sessionToken && cached?.lastAgent?.handle ? {
-    email: cached.email || cached.displayName,
-    agentHandle: cached.lastAgent.handle,
-    model: 'Claude Opus 4.6',
-    workspace: process.cwd(),
-  } : {})
+  printBanner(
+    cached?.sessionToken && cached?.lastAgent?.handle
+      ? {
+          email: cached.email || cached.displayName,
+          agentHandle: cached.lastAgent.handle,
+          model: 'Claude Opus 4.6',
+          workspace: process.cwd(),
+        }
+      : {}
+  )
 
   // Check for updates (non-blocking, runs in background)
   checkForUpdate()
@@ -637,14 +697,19 @@ export async function runOnboarding() {
 
         if (agentName && officeId) {
           try {
-            const result = await api('POST', '/api/cli/office/hire', {
-              officeId,
-              agentName,
-              provider: 'claude-code',
-              roleId: cached.lastAgent.roleId,
-              roleCategory: cached.lastAgent.roleCategory,
-              roleLabel: cached.lastAgent.roleLabel,
-            }, cached.sessionToken)
+            const result = await api(
+              'POST',
+              '/api/cli/office/hire',
+              {
+                officeId,
+                agentName,
+                provider: 'claude-code',
+                roleId: cached.lastAgent.roleId,
+                roleCategory: cached.lastAgent.roleCategory,
+                roleLabel: cached.lastAgent.roleLabel,
+              },
+              cached.sessionToken
+            )
 
             if (!result.connectionToken) {
               throw new Error('Server returned no connectionToken')
@@ -674,7 +739,7 @@ export async function runOnboarding() {
         if (freshToken) {
           // Wait for Registry propagation before connecting — without this,
           // Chat Bridge may still see the old token and reject with 1008.
-          await new Promise(resolve => setTimeout(resolve, 1000))
+          await new Promise((resolve) => setTimeout(resolve, 1000))
           spinner.succeed(`Reconnecting as ${chalk.bold(cached.lastAgent.handle)}...`)
           return {
             agent: cached.lastAgent.handle,
