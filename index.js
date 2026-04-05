@@ -103,7 +103,7 @@ const DEFAULT_MANAGER_URL =
   process.env.MANAGER_HOST_URL ||
   process.env.MANAGER_URL ||
   process.env.CHAT_BRIDGE_WS_URL ||
-  'ws://localhost:3020/ws/host'
+  'wss://chatbridge.aladdinagi.xyz/ws/host'
 
 const argv = yargs(hideBin(process.argv))
   .usage('$0 — Connect Claude Code to your Virtual Office')
@@ -640,7 +640,9 @@ async function fetchHistoryForPrompt(sessionId, metadata = {}) {
   sessionHistoryLastFetched.set(sessionId, Date.now())
 
   const chatBridgeUrl =
-    process.env.CHAT_BRIDGE_HTTP_URL || process.env.CHAT_BRIDGE_URL || 'http://localhost:3020'
+    process.env.CHAT_BRIDGE_HTTP_URL ||
+    process.env.CHAT_BRIDGE_URL ||
+    'https://chatbridge.aladdinagi.xyz'
 
   // Resolve conversationId: prefer metadata (original), fall back to sessionId parse
   const parsed = parseSessionId(sessionId)
@@ -780,7 +782,9 @@ async function buildAgentSystemPrompt() {
 
   // Method 1: Fetch from Chat Bridge API (works in npm package)
   const chatBridgeUrl =
-    process.env.CHAT_BRIDGE_HTTP_URL || process.env.CHAT_BRIDGE_URL || 'http://localhost:3020'
+    process.env.CHAT_BRIDGE_HTTP_URL ||
+    process.env.CHAT_BRIDGE_URL ||
+    'https://chatbridge.aladdinagi.xyz'
 
   try {
     const controller = new AbortController()
@@ -843,7 +847,9 @@ async function registerMcpServer() {
     const mcpServerPath = path.resolve(__dirname, 'mcp-server-lite.cjs')
 
     const chatBridgeUrl =
-      process.env.CHAT_BRIDGE_URL || process.env.CHAT_BRIDGE_BASE_URL || 'http://localhost:3020'
+      process.env.CHAT_BRIDGE_URL ||
+      process.env.CHAT_BRIDGE_BASE_URL ||
+      'https://chatbridge.aladdinagi.xyz'
 
     // Use agent-specific MCP name to avoid conflicts when multiple agents run
     const mcpName = `vo-${agentHandle.split('.')[0]}`
@@ -1062,7 +1068,7 @@ async function emitDeviceLiveView(liveViewUrl, relayUrl, deviceType = 'computer'
     process.env.CHAT_BRIDGE_HTTP_URL ||
     process.env.CHAT_BRIDGE_URL ||
     process.env.CHAT_BRIDGE_BASE_URL ||
-    'http://localhost:3020'
+    'https://chatbridge.aladdinagi.xyz'
   try {
     const isMobile = deviceType === 'mobile'
     const isBrowser = deviceType === 'browser'
@@ -1191,7 +1197,7 @@ function _flushWorkspaceEvents() {
     process.env.CHAT_BRIDGE_HTTP_URL ||
     process.env.CHAT_BRIDGE_URL ||
     process.env.CHAT_BRIDGE_BASE_URL ||
-    'http://localhost:3020'
+    'https://chatbridge.aladdinagi.xyz'
 
   fetch(`${baseUrl}/api/workspace/event/batch`, {
     method: 'POST',
@@ -1284,7 +1290,7 @@ function emitDocUpdateEvent(filePath, content, isWriting = true) {
     process.env.CHAT_BRIDGE_HTTP_URL ||
     process.env.CHAT_BRIDGE_URL ||
     process.env.CHAT_BRIDGE_BASE_URL ||
-    'http://localhost:3020'
+    'https://chatbridge.aladdinagi.xyz'
   fetch(`${baseUrl}/api/workspace/event/batch`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -2833,7 +2839,7 @@ async function refreshTokenAndReconnect() {
     process.env.CHAT_BRIDGE_HTTP_URL ||
     process.env.CHAT_BRIDGE_URL ||
     process.env.CHAT_BRIDGE_BASE_URL ||
-    'http://localhost:3020'
+    'https://chatbridge.aladdinagi.xyz'
 
   const res = await fetch(`${chatBridgeBase}/api/cli/office/hire`, {
     method: 'POST',
@@ -3016,10 +3022,9 @@ function connect() {
     // ── Local screen sharing (macOS VNC → noVNC in Computer tab) ──────────
     // Priority: 1) explicit --novnc-url  2) auto-detect macOS Screen Sharing
     // Construct relay URL for cross-device streaming via chatbridge
-    const chatBridgeWsBase = (process.env.CHAT_BRIDGE_URL || 'ws://localhost:3020').replace(
-      /^http/,
-      'ws'
-    )
+    const chatBridgeWsBase = (
+      process.env.CHAT_BRIDGE_URL || 'wss://chatbridge.aladdinagi.xyz'
+    ).replace(/^http/, 'ws')
     const deviceHostname = os.hostname()
     const screenRelayUrl = `${chatBridgeWsBase}/ws/screen/${encodeURIComponent(hostId)}?device=${encodeURIComponent(deviceHostname)}`
 
@@ -3235,7 +3240,7 @@ function startRegistryHeartbeat() {
     process.env.CHAT_BRIDGE_HTTP_URL ||
     process.env.CHAT_BRIDGE_URL ||
     process.env.CHAT_BRIDGE_BASE_URL ||
-    'http://localhost:3020'
+    'https://chatbridge.aladdinagi.xyz'
 
   const sendHeartbeat = async () => {
     try {
@@ -3384,7 +3389,7 @@ function stopAdbPoll() {
  */
 async function startMobileScreenForPhone(serial, deviceId) {
   try {
-    const chatBridgeWsBase = (process.env.CHAT_BRIDGE_URL || 'ws://localhost:3020')
+    const chatBridgeWsBase = (process.env.CHAT_BRIDGE_URL || 'wss://chatbridge.aladdinagi.xyz')
       .replace(/^http/, 'ws')
       .replace(/\/+$/, '')
     // Use separate relay channel from desktop: hostId-mobile
@@ -3419,7 +3424,7 @@ function connectLocalDevice() {
     deviceReconnectTimer = null
   }
 
-  const chatBridgeWs = (process.env.CHAT_BRIDGE_WS_URL || 'ws://localhost:3020')
+  const chatBridgeWs = (process.env.CHAT_BRIDGE_WS_URL || 'wss://chatbridge.aladdinagi.xyz')
     .replace(/^http/, 'ws')
     .replace(/\/+$/, '')
   const deviceUrl = `${chatBridgeWs}/local-agent`
@@ -4300,7 +4305,7 @@ async function launchLocalBrowserAndNavigate(url) {
   }
 
   // First launch — start Chrome + bridge + emit liveview
-  const chatBridgeWsBase = (process.env.CHAT_BRIDGE_URL || 'ws://localhost:3020')
+  const chatBridgeWsBase = (process.env.CHAT_BRIDGE_URL || 'wss://chatbridge.aladdinagi.xyz')
     .replace(/^http/, 'ws')
     .replace(/\/+$/, '')
   const browserRelayUrl = `${chatBridgeWsBase}/ws/screen/${encodeURIComponent(hostId)}-browser`
