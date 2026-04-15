@@ -3025,8 +3025,7 @@ function connect() {
     const chatBridgeWsBase = (
       process.env.CHAT_BRIDGE_URL || 'wss://chatbridge.aladdinagi.xyz'
     ).replace(/^http/, 'ws')
-    const deviceHostname = os.hostname()
-    const screenRelayUrl = `${chatBridgeWsBase}/ws/screen/${encodeURIComponent(hostId)}?device=${encodeURIComponent(deviceHostname)}`
+    const screenRelayUrl = `${chatBridgeWsBase}/ws/screen/${encodeURIComponent(hostId)}`
 
     const explicitNovnc = argv['novnc-url'] || process.env.NOVNC_URL
     if (explicitNovnc) {
@@ -3100,6 +3099,12 @@ function connect() {
     log(chalk.red(`Disconnected (${code} ${reasonStr})`))
     wsRef = null
     stopHeartbeat()
+    // Clear VNC liveview timer — it emits events over the WS which is now closed.
+    // A new timer is created on reconnect if vncBridge is still active.
+    if (vncLiveviewTimer) {
+      clearInterval(vncLiveviewTimer)
+      vncLiveviewTimer = null
+    }
     // Keep registry heartbeat running during reconnection — it's independent
     // of the WS connection and tells Chat Bridge the process is still alive.
 
