@@ -193,7 +193,7 @@ const PROVIDERS = {
       '--dangerously-skip-permissions',
     ],
     modelFlag: '--model',
-    defaultModel: 'claude-opus-4-6',
+    defaultModel: 'claude-opus-4-7',
     envCheck: null, // Claude Code uses local session (claude login), not API key
     installHint: 'npm install -g @anthropic-ai/claude-code',
     // --resume SESSION_ID to continue conversations
