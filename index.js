@@ -3472,6 +3472,11 @@ function connectLocalDevice() {
           platform: `${os.platform()}-${os.arch()}`,
           capabilities: ['file_ops', 'exec_command', 'computer_use'],
           deviceId: persistedDeviceId || undefined,
+          // Flag this device as agent-bound so chat-bridge routes file/git
+          // operations to this local cwd (not EFS shared) and notifies only
+          // this agent's host adapter. See chat-bridge/core/localAgentBridge.js
+          // isAgentBound check.
+          agentBound: true,
         },
       })
     )
