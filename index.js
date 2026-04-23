@@ -3732,22 +3732,24 @@ async function executeLocalTool(toolName, params, context = {}) {
     }
 
     case 'exec_command': {
-      const { execSync } = await import('child_process')
+      // NOTE: async exec — execSync blocks the event loop for the command's
+      // full duration, starving WebSocket pong responses. Heartbeat then
+      // trips and ws.terminate() fires, which manifests as 1006 on chat-bridge
+      // and kills the running tool request mid-flight.
       try {
-        const result = execSync(params.command, {
+        const { stdout, stderr } = await execAsync(params.command, {
           cwd: params.cwd || workspace,
           timeout: params.timeout || 30000,
           encoding: 'utf-8',
           maxBuffer: 1024 * 1024,
-          stdio: ['pipe', 'pipe', 'pipe'], // capture stderr instead of printing to terminal
         })
-        return { stdout: result, exitCode: 0 }
+        return { stdout, stderr, exitCode: 0 }
       } catch (execErr) {
         // Return stderr/exit code instead of throwing — the caller handles errors
         return {
           stdout: execErr.stdout || '',
           stderr: execErr.stderr || execErr.message,
-          exitCode: execErr.status ?? 1,
+          exitCode: execErr.code ?? 1,
         }
       }
     }
